@@ -11,7 +11,9 @@ from src.costs.record import get_source_total_cost
 from src.db.models import SourceVideo
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
+from src.ingest.format_probe import run_format_probe
 from src.notifications.discord import send_error, send_message
+from src.utils.ffmpeg import probe_video
 
 log = structlog.get_logger(__name__)
 
@@ -93,7 +95,19 @@ async def process_source_video(
                 )
                 await session.commit()
 
-            # --- Phase 3: format probe goes here (check cost budget before each priced step) ---
+            # Format probe — first priced step
+            info = await probe_video(local_path)
+            async with get_session_factory()() as probe_session:
+                await check_cost_budget(probe_session, source_video.id, settings)
+                await run_format_probe(
+                    session=probe_session,
+                    source_video=source_video,
+                    video_path=local_path,
+                    info=info,
+                    settings=settings,
+                )
+                await probe_session.commit()
+
             # --- Phase 4: Pegasus index + query goes here ---
 
             processed_root = await drive_client.get_or_create_folder(
