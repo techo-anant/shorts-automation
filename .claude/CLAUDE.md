@@ -240,4 +240,5 @@ Every priced operation writes one `CostEvent` row immediately after the operatio
 
 > Recurring problems and the fixes that worked. Append here (format: date, one-line cause, **Rule:**) whenever a bug or friction point shows up more than once.
 
-_(Empty — project hasn't shipped yet. First entries will likely come from: Pegasus index lifecycle surprises, FFmpeg filter-graph quoting on Railway's image, YouTube's Shorts classification rules.)_
+- **2026-05** — Debian drops old ffmpeg patch versions when a security update ships; `apt-get install ffmpeg=<old-pin>` fails with exit 100.
+  **Rule:** When the pinned ffmpeg version causes a build failure, bump the pin to the current bookworm version (`apt-cache policy ffmpeg` inside a fresh container) — do NOT remove the pin. Removing it trades reproducibility for a green build and the same failure recurs silently on the next security update.
