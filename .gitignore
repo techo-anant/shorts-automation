@@ -1,0 +1,19 @@
+.env
+*.pyc
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+# Local video files — never commit source videos or rendered shorts
+*.mp4
+*.mov
+*.avi
+*.mkv
+# Extracted frames
+/tmp/
+frames/

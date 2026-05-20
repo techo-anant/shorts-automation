@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shorts-automation"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "google-api-python-client>=2.115",
+    "google-auth-httplib2>=0.2",
+    "google-auth-oauthlib>=1.2",
+    # google-genai is the new unified Google Gen AI SDK (not google-generativeai)
+    "google-genai>=1.5",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "sqlalchemy[asyncio]>=2.0",
+    "structlog>=24.1",
+    # Verify the package name at https://pypi.org/project/twelvelabs/ before Phase 4
+    "twelvelabs>=0.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.9",
+    "pytest>=8.1",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "types-requests>=2.31",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
