@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     DISCORD_WEBHOOK_URL: str
     DISCORD_SUCCESS_PINGS: bool = False
 
+    # Moment detection provider — switch to "pegasus" when bake-off is done
+    MOMENTS_PROVIDER: str = "marengo"
+
     # Polling
     POLL_INTERVAL_SECONDS: int = 60
 

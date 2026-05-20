@@ -7,11 +7,13 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
-from src.costs.record import get_source_total_cost
-from src.db.models import SourceVideo
+from src.costs.record import get_cost_breakdown, get_source_total_cost
+from src.db.models import Moment, MomentDetectionRun, SourceVideo
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
-from src.ingest.format_probe import run_format_probe
+from src.indexer.marengo import get_or_create_index
+from src.ingest.format_probe import FormatProbeResult, run_format_probe
+from src.moments.base import get_moments_provider
 from src.notifications.discord import send_error, send_message
 from src.utils.ffmpeg import probe_video
 
@@ -69,6 +71,36 @@ async def _move_to_failed(
         log.exception("failed_folder_move_error", source_id=source_video.id)
 
 
+def _build_success_summary(
+    source_video: SourceVideo,
+    format_result: FormatProbeResult,
+    moments: list[Moment],
+    total_cost: Decimal,
+    breakdown: dict[str, Decimal],
+) -> str:
+    shorts = [m for m in moments if m.clip_type == "shorts"]
+    highlights = [m for m in moments if m.clip_type == "highlight_reel"]
+
+    facecam_str = "yes" if format_result.has_facecam else "no"
+    if format_result.facecam_unstable:
+        facecam_str += " (unstable)"
+
+    probe_cost = breakdown.get("ingest.format_probe", Decimal("0"))
+    index_cost = breakdown.get("indexer.marengo_index", Decimal("0"))
+    query_cost = sum(
+        v for k, v in breakdown.items() if k == "moments.marengo_query"
+    )
+
+    lines = [
+        f"**{source_video.name}** [{source_video.category}]",
+        f"Facecam: {facecam_str} | Aspect: {format_result.source_aspect_ratio}",
+        f"Shorts moments: {len(shorts)} | Highlight timestamps: {len(highlights)}",
+        f"Cost: ${total_cost:.4f}  "
+        f"(probe: ${probe_cost:.4f} | index: ${index_cost:.4f} | queries: ${query_cost:.4f})",
+    ]
+    return "\n".join(lines)
+
+
 async def process_source_video(
     source_video: SourceVideo,
     drive_client: DriveClient,
@@ -80,6 +112,9 @@ async def process_source_video(
         name=source_video.name,
         category=source_video.category,
     )
+
+    format_result: FormatProbeResult | None = None
+    moments: list[Moment] = []
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -95,41 +130,85 @@ async def process_source_video(
                 )
                 await session.commit()
 
-            # Format probe — first priced step
+            # --- Format probe (Gemini) ---
             info = await probe_video(local_path)
-            async with get_session_factory()() as probe_session:
-                await check_cost_budget(probe_session, source_video.id, settings)
-                await run_format_probe(
-                    session=probe_session,
+            async with get_session_factory()() as session:
+                await check_cost_budget(session, source_video.id, settings)
+                format_result = await run_format_probe(
+                    session=session,
                     source_video=source_video,
                     video_path=local_path,
                     info=info,
                     settings=settings,
                 )
-                await probe_session.commit()
+                await session.commit()
 
-            # --- Phase 4: Pegasus index + query goes here ---
+            # --- Marengo indexing (deletes local file after upload confirmed) ---
+            async with get_session_factory()() as session:
+                await check_cost_budget(session, source_video.id, settings)
+                run: MomentDetectionRun = await get_or_create_index(
+                    session=session,
+                    source_video=source_video,
+                    video_path=local_path,
+                    info=info,
+                    settings=settings,
+                )
+                await session.commit()
 
-            processed_root = await drive_client.get_or_create_folder(
-                "processed", settings.DRIVE_SHORTS_ROOT_FOLDER_ID
+            # local_path may have been deleted by the indexer at this point;
+            # the TemporaryDirectory will clean up the empty dir on exit.
+
+            # --- Moment detection ---
+            async with get_session_factory()() as session:
+                await check_cost_budget(session, source_video.id, settings)
+                provider = get_moments_provider(settings)
+                moments = await provider.find_moments(
+                    index_id=run.index_id or "",
+                    source_video_id=source_video.id,
+                    run_id=run.id,
+                    session=session,
+                    settings=settings,
+                )
+                await session.commit()
+
+        # --- Move source file in Drive ---
+        shorts_moments = [m for m in moments if m.clip_type == "shorts"]
+        if shorts_moments:
+            dest_folder_name = "processed"
+            final_status = "completed"
+        else:
+            dest_folder_name = "no-shorts-found"
+            final_status = "completed_no_output"
+
+        dest_root = await drive_client.get_or_create_folder(
+            dest_folder_name, settings.DRIVE_SHORTS_ROOT_FOLDER_ID
+        )
+        dest_folder = await drive_client.get_or_create_folder(
+            source_video.category, dest_root
+        )
+        parents = await drive_client.get_parents(source_video.drive_file_id)
+        current_parent = parents[0] if parents else ""
+        await drive_client.move(source_video.drive_file_id, dest_folder, current_parent)
+
+        await _mark_status(source_video.id, final_status)
+        log.info(
+            "source_video_completed",
+            source_id=source_video.id,
+            name=source_video.name,
+            status=final_status,
+            shorts_count=len(shorts_moments),
+        )
+
+        # --- Discord summary ---
+        async with get_session_factory()() as session:
+            total_cost = await get_source_total_cost(session, source_video.id)
+            breakdown = await get_cost_breakdown(session, source_video.id)
+
+        if format_result is not None:
+            summary = _build_success_summary(
+                source_video, format_result, moments, total_cost, breakdown
             )
-            category_folder = await drive_client.get_or_create_folder(
-                source_video.category, processed_root
-            )
-            parents = await drive_client.get_parents(source_video.drive_file_id)
-            current_parent = parents[0] if parents else ""
-            await drive_client.move(source_video.drive_file_id, category_folder, current_parent)
-
-            # local_path deleted automatically when TemporaryDirectory exits
-
-        await _mark_status(source_video.id, "completed")
-        log.info("source_video_completed", source_id=source_video.id, name=source_video.name)
-
-        if settings.DISCORD_SUCCESS_PINGS:
-            await send_message(
-                settings.DISCORD_WEBHOOK_URL,
-                f"Completed: **{source_video.name}** [{source_video.category}] → processed/",
-            )
+            await send_message(settings.DISCORD_WEBHOOK_URL, summary)
 
     except CostBudgetExceeded as exc:
         log.error(

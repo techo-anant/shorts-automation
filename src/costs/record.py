@@ -46,21 +46,21 @@ async def record_format_probe(
     return event
 
 
-async def record_pegasus_index(
+async def record_marengo_index(
     session: AsyncSession,
     source_video_id: int,
     detection_run_id: int,
     video_minutes: Decimal,
 ) -> CostEvent:
-    unit_cost = PRICES["pegasus_index_per_minute"]
+    unit_cost = PRICES["marengo_index_per_minute"]
     total = video_minutes * unit_cost
 
     event = CostEvent(
         source_video_id=source_video_id,
         detection_run_id=detection_run_id,
-        step="indexer.pegasus_index",
+        step="indexer.marengo_index",
         provider="twelvelabs",
-        model="pegasus-1.2",
+        model="marengo-3.0",
         units=video_minutes,
         unit_cost_usd=unit_cost,
         total_cost_usd=total,
@@ -73,7 +73,7 @@ async def record_pegasus_index(
     await session.flush()
     log.info(
         "cost_event_recorded",
-        step="indexer.pegasus_index",
+        step="indexer.marengo_index",
         provider="twelvelabs",
         units=str(video_minutes),
         cost_usd=str(total),
@@ -81,31 +81,32 @@ async def record_pegasus_index(
     return event
 
 
-async def record_pegasus_query(
+async def record_marengo_query(
     session: AsyncSession,
     source_video_id: int,
     detection_run_id: int,
+    query_type: str,
 ) -> CostEvent:
-    unit_cost = PRICES["pegasus_query_per_call"]
+    unit_cost = PRICES["marengo_search_per_query"]
 
     event = CostEvent(
         source_video_id=source_video_id,
         detection_run_id=detection_run_id,
-        step="moments.pegasus_query",
+        step="moments.marengo_query",
         provider="twelvelabs",
-        model="pegasus-1.2",
+        model="marengo-3.0",
         units=Decimal("1"),
         unit_cost_usd=unit_cost,
         total_cost_usd=unit_cost,
-        metadata_json={"pricing_version": PRICING_VERSION},
+        metadata_json={"pricing_version": PRICING_VERSION, "query_type": query_type},
     )
     session.add(event)
     await session.flush()
     log.info(
         "cost_event_recorded",
-        step="moments.pegasus_query",
+        step="moments.marengo_query",
         provider="twelvelabs",
-        units=1,
+        query_type=query_type,
         cost_usd=str(unit_cost),
     )
     return event
@@ -118,3 +119,15 @@ async def get_source_total_cost(session: AsyncSession, source_video_id: int) -> 
         )
     )
     return Decimal(str(result.scalar_one()))
+
+
+async def get_cost_breakdown(
+    session: AsyncSession, source_video_id: int
+) -> dict[str, Decimal]:
+    """Returns {step: total_cost_usd} for all CostEvents of a source video."""
+    result = await session.execute(
+        select(CostEvent.step, func.sum(CostEvent.total_cost_usd))
+        .where(CostEvent.source_video_id == source_video_id)
+        .group_by(CostEvent.step)
+    )
+    return {row[0]: Decimal(str(row[1])) for row in result.fetchall()}

@@ -105,6 +105,8 @@ class Moment(Base):
     start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # shorts | highlight_reel — set by the moments provider to distinguish query results
+    clip_type: Mapped[str] = mapped_column(String(50), nullable=False, server_default="shorts")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
