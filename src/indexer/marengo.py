@@ -80,7 +80,9 @@ async def get_or_create_index(
 
     try:
         index_id, expires_at = await asyncio.wait_for(
-            asyncio.to_thread(_create_and_upload, source_video.name, video_path, settings),
+            asyncio.to_thread(
+                _create_and_upload, source_video.name, video_path, settings, video_index.id
+            ),
             timeout=_INDEX_TIMEOUT_SECONDS,
         )
     except TimeoutError as err:
@@ -111,7 +113,7 @@ async def get_or_create_index(
 
 
 def _create_and_upload(
-    video_name: str, video_path: Path, settings: Settings
+    video_name: str, video_path: Path, settings: Settings, attempt_id: int
 ) -> tuple[str, datetime | None]:
     """
     Synchronous — runs in a thread pool via asyncio.to_thread.
@@ -123,9 +125,9 @@ def _create_and_upload(
     """
     client = TwelveLabs(api_key=settings.TWELVELABS_API_KEY)
 
-    log.info("marengo_creating_index", video_name=video_name)
+    log.info("marengo_creating_index", video_name=video_name, attempt_id=attempt_id)
     index = client.indexes.create(
-        index_name=f"shorts-{video_name[:80]}",
+        index_name=f"shorts-{attempt_id}-{video_name[:70]}",
         models=[{"model_name": "marengo3.0", "model_options": ["visual", "audio"]}],
     )
     # SDK types index.id as str | None but it is always set on a successful create response.
