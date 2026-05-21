@@ -173,7 +173,7 @@ def _call_analyze(
         max_tokens=_MAX_OUTPUT_TOKENS,
     )
 
-    task_id: str = task.id  # type: ignore[attr-defined]
+    task_id: str = task.task_id
     log.info("pegasus_analyze_task_created", task_id=task_id, asset_id=asset_id)
 
     deadline = time.monotonic() + _ANALYZE_TIMEOUT_SECONDS
