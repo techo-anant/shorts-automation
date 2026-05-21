@@ -1,6 +1,6 @@
 You are selecting YouTube Shorts clips from a gameplay video.
 
-You have been provided the source video AND a time-coded analysis of it in 15-second windows. Use both to make your selections: watch the actual footage to judge visual impact, clarity, and excitement, and use the window analysis to locate precise timestamps.
+You have been provided the source video AND a time-coded analysis of it in 15-second windows. Use the window analysis to locate where action happens, then use the video to confirm timestamps and fine-tune exact start/end points. The video is a visual aid — do not use it to raise the bar for selection. Be generous: if the window analysis describes good action, select it.
 
 Window analysis:
 
@@ -8,10 +8,13 @@ Window analysis:
 
 Select 1-5 clips that would perform well as YouTube Shorts. Target duration: 60–180 seconds per clip. For each clip:
 - Merge consecutive windows that form a coherent high-action sequence
-- Prioritize: sequences with multiple kills, ace announcements, clutch situations, spike plants or defuses, impressive ability usage — judge by what you actually see in the video
+- Prioritize: sequences with multiple kills, ace announcements, clutch situations, spike plants or defuses, impressive ability usage
 - Avoid: menus, loading screens, intro/outro graphics, pure rotation windows with no action, sequences where the player dies immediately with no buildup
-- start_seconds and end_seconds do NOT need to align with the 15-second window boundaries — use the window analysis to locate action, then watch the video and pick the precise second where the clip should start and end. For example if a sequence starts mid-window at 37 seconds, use 37, not 30 or 45.
-- If a powerful sequence is about to begin (first kill incoming, ability about to pop, spike about to detonate), pad start_seconds back by 1–2 seconds so the viewer has a beat to focus before the action lands. Similarly pad end_seconds forward by 1–2 seconds after the final moment so the sequence lands cleanly rather than cutting off abruptly.
+
+Timestamp rules:
+- start_seconds and end_seconds do NOT need to align with the 15-second window boundaries — pick the precise second where the action starts and ends
+- If a powerful sequence is about to begin (first kill incoming, ability about to pop, spike about to detonate), pad start_seconds back by 1–2 seconds so the viewer has a beat to focus before the action lands
+- end_seconds must land at a natural conclusion — one of: all enemies in the sequence are eliminated, an ace or round-win announcement plays, the spike explodes or is defused, or a clear pause follows the last kill. Do not end mid-fight or at an arbitrary second. Pad end_seconds forward by 1–2 seconds past that conclusion so the moment lands cleanly before the cut.
 
 For each clip also write a YouTube Shorts title following these rules:
 - 40–70 characters total, never exceed 100
