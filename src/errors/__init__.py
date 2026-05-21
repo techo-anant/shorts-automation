@@ -56,6 +56,11 @@ class PegasusQuotaError(PegasusError):
     step = "pegasus.quota"
 
 
+class PegasusVideoError(PegasusError):
+    """Video rejected by TwelveLabs — invalid format, resolution, duration, or file size."""
+    step = "pegasus.upload"
+
+
 # ---------------------------------------------------------------------------
 # Gemini / Google AI
 # ---------------------------------------------------------------------------

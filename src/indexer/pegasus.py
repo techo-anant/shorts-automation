@@ -5,19 +5,39 @@ from pathlib import Path
 import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from twelvelabs import TwelveLabs
+from twelvelabs import TooManyRequestsError, TwelveLabs
 
 from src.config import Settings
 from src.db.models import SourceVideo, VideoIndex
+from src.errors import PegasusIndexError, PegasusQuotaError, PegasusVideoError
 
 log = structlog.get_logger(__name__)
 
+# TwelveLabs error codes that indicate quota / billing issues (not retryable today).
+_TL_QUOTA_CODES = frozenset({
+    "usage_limit_exceeded",
+    "api_allowed_for_paid_plan",
+    "token_limit_exceeded",
+    "too_many_requests",
+})
+
+# TwelveLabs error codes that mean the video file itself is invalid or unsupported.
+_TL_VIDEO_CODES = frozenset({
+    "video_resolution_too_low",
+    "video_resolution_too_high",
+    "video_resolution_invalid_aspect_ratio",
+    "video_file_broken",
+    "video_file_live",
+    "video_filesize_too_large",
+    "video_duration_too_short",
+    "video_duration_too_long",
+    "media_url_unsupported_format",
+    "media_url_file_broken",
+    "media_filesize_too_large",
+})
+
 # Multipart upload is synchronous in the SDK; 30 min covers very large files.
 _UPLOAD_TIMEOUT_SECONDS = 30 * 60
-
-
-class PegasusUploadError(Exception):
-    pass
 
 
 async def get_or_upload_asset(
@@ -79,7 +99,7 @@ async def get_or_upload_asset(
     except TimeoutError as err:
         video_index.status = "failed"
         await session.flush()
-        raise PegasusUploadError(
+        raise PegasusIndexError(
             f"Pegasus upload timed out after {_UPLOAD_TIMEOUT_SECONDS}s "
             f"for source {source_video.id}"
         ) from err
@@ -92,6 +112,18 @@ async def get_or_upload_asset(
     log.info("local_video_deleted_after_upload", source_id=source_video.id)
 
     return video_index
+
+
+def _classify_upload_error(exc: Exception) -> PegasusIndexError:
+    """Map a raw TwelveLabs SDK exception from the upload step to the correct typed error."""
+    err_str = str(exc)
+    for code in _TL_QUOTA_CODES:
+        if code in err_str:
+            return PegasusQuotaError(f"TwelveLabs quota/billing issue during upload: {exc}")
+    for code in _TL_VIDEO_CODES:
+        if code in err_str:
+            return PegasusVideoError(f"Video rejected by TwelveLabs: {exc}")
+    return PegasusIndexError(f"Pegasus upload failed: {exc}")
 
 
 def _upload(video_name: str, video_path: Path, settings: Settings) -> str:
@@ -109,10 +141,15 @@ def _upload(video_name: str, video_path: Path, settings: Settings) -> str:
         )
 
     log.info("pegasus_uploading_video", path=str(video_path))
-    result = client.multipart_upload.upload_file(  # type: ignore[attr-defined]
-        video_path,
-        filename=video_name,
-        progress_callback=_on_progress,
-    )
+    try:
+        result = client.multipart_upload.upload_file(  # type: ignore[attr-defined]
+            video_path,
+            filename=video_name,
+            progress_callback=_on_progress,
+        )
+    except TooManyRequestsError as err:
+        raise PegasusQuotaError(f"TwelveLabs rate limit during upload: {err}") from err
+    except Exception as err:
+        raise _classify_upload_error(err) from err
     log.info("pegasus_upload_complete", asset_id=result.asset_id)
     return str(result.asset_id)

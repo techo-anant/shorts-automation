@@ -27,6 +27,14 @@ _ANALYZE_TIMEOUT_SECONDS = 30 * 60
 _POLL_INTERVAL_SECONDS = 15
 _MAX_OUTPUT_TOKENS = 65536
 
+# Error codes that indicate quota/billing limits rather than a transient API failure.
+_TL_QUOTA_CODES = frozenset({
+    "usage_limit_exceeded",
+    "api_allowed_for_paid_plan",
+    "token_limit_exceeded",
+    "too_many_requests",
+})
+
 # Prompt template is the segment_definitions description; fields are fixed per the agreed schema.
 _SEGMENT_DESCRIPTION = (
     "Describe this video in 10-second windows from start to finish. "
@@ -179,6 +187,8 @@ def _call_analyze(
     except TooManyRequestsError as err:
         raise PegasusQuotaError(f"TwelveLabs rate limit on task create: {err}") from err
     except Exception as err:
+        if any(code in str(err) for code in _TL_QUOTA_CODES):
+            raise PegasusQuotaError(f"TwelveLabs quota during analyze create: {err}") from err
         raise PegasusDescribeError(f"Pegasus task creation failed for asset {asset_id}: {err}") from err
 
     task_id: str = task.task_id
@@ -191,6 +201,8 @@ def _call_analyze(
         except TooManyRequestsError as err:
             raise PegasusQuotaError(f"TwelveLabs rate limit while polling {task_id}: {err}") from err
         except Exception as err:
+            if any(code in str(err) for code in _TL_QUOTA_CODES):
+                raise PegasusQuotaError(f"TwelveLabs quota while polling {task_id}: {err}") from err
             raise PegasusDescribeError(f"Pegasus poll failed for task {task_id}: {err}") from err
 
         status = getattr(current, "status", "unknown")
