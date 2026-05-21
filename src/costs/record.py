@@ -49,8 +49,8 @@ async def record_format_probe(
 async def record_marengo_index(
     session: AsyncSession,
     source_video_id: int,
-    detection_run_id: int,
     video_minutes: Decimal,
+    detection_run_id: int | None = None,
 ) -> CostEvent:
     unit_cost = PRICES["marengo_index_per_minute"]
     total = video_minutes * unit_cost
@@ -110,6 +110,15 @@ async def record_marengo_query(
         cost_usd=str(unit_cost),
     )
     return event
+
+
+async def get_short_total_cost(session: AsyncSession, short_id: int) -> Decimal:
+    result = await session.execute(
+        select(func.coalesce(func.sum(CostEvent.total_cost_usd), 0)).where(
+            CostEvent.short_id == short_id
+        )
+    )
+    return Decimal(str(result.scalar_one()))
 
 
 async def get_source_total_cost(session: AsyncSession, source_video_id: int) -> Decimal:

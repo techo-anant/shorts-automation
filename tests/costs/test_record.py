@@ -100,6 +100,17 @@ class TestRecordMarengoIndex:
         event = session.add.call_args[0][0]
         assert event.total_cost_usd == Decimal("60") * PRICES["marengo_index_per_minute"]
 
+    async def test_detection_run_id_defaults_to_none(self) -> None:
+        session = _make_session()
+        await record_marengo_index(
+            session=session,
+            source_video_id=7,
+            video_minutes=Decimal("10"),
+        )
+        event = session.add.call_args[0][0]
+        assert event.detection_run_id is None
+        assert event.source_video_id == 7
+
 
 class TestRecordMarengoQuery:
     async def test_writes_cost_event_with_correct_fields(self) -> None:

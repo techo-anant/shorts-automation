@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
 from src.costs.record import get_cost_breakdown, get_source_total_cost
-from src.db.models import Moment, MomentDetectionRun, SourceVideo
+from src.db.models import Moment, MomentDetectionRun, Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
 from src.indexer.marengo import get_or_create_index
@@ -120,7 +120,11 @@ async def process_source_video(
         with tempfile.TemporaryDirectory() as tmpdir:
             local_path = Path(tmpdir) / source_video.name
 
-            await drive_client.download(source_video.drive_file_id, local_path)
+            await drive_client.download(
+                source_video.drive_file_id,
+                local_path,
+                expected_size=source_video.size_bytes,
+            )
 
             async with get_session_factory()() as session:
                 await session.execute(
@@ -146,7 +150,7 @@ async def process_source_video(
             # --- Marengo indexing (deletes local file after upload confirmed) ---
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
-                run: MomentDetectionRun = await get_or_create_index(
+                video_index: VideoIndex = await get_or_create_index(
                     session=session,
                     source_video=source_video,
                     video_path=local_path,
@@ -161,14 +165,37 @@ async def process_source_video(
             # --- Moment detection ---
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
+                run = MomentDetectionRun(
+                    source_video_id=source_video.id,
+                    video_index_id=video_index.id,
+                    provider=settings.MOMENTS_PROVIDER,
+                    status="pending",
+                )
+                session.add(run)
+                await session.flush()
+
                 provider = get_moments_provider(settings)
                 moments = await provider.find_moments(
-                    index_id=run.index_id or "",
+                    index_id=video_index.index_id,
                     source_video_id=source_video.id,
                     run_id=run.id,
                     session=session,
                     settings=settings,
                 )
+
+                for moment in moments:
+                    if moment.clip_type == "shorts":
+                        session.add(
+                            Short(
+                                source_video_id=source_video.id,
+                                moment_id=moment.id,
+                                clip_type=moment.clip_type,
+                                status="pending",
+                                cut_start_seconds=moment.start_seconds,
+                                cut_end_seconds=moment.end_seconds,
+                            )
+                        )
+
                 await session.commit()
 
         # --- Move source file in Drive ---

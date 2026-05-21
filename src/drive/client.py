@@ -96,7 +96,9 @@ class DriveClient:
 
         return await asyncio.to_thread(_run)
 
-    async def download(self, file_id: str, dest_path: Path) -> None:
+    async def download(
+        self, file_id: str, dest_path: Path, expected_size: int | None = None
+    ) -> None:
         def _run() -> None:
             request = self._svc().files().get_media(fileId=file_id)
             dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,6 +115,16 @@ class DriveClient:
                         )
 
         await asyncio.to_thread(_run)
+
+        if expected_size is not None:
+            actual_size = dest_path.stat().st_size
+            if actual_size != expected_size:
+                dest_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"Drive download truncated: expected {expected_size} bytes,"
+                    f" got {actual_size} (file_id={file_id})"
+                )
+
         log.info("drive_download_complete", file_id=file_id, dest=str(dest_path))
 
     async def move(self, file_id: str, new_parent_id: str, current_parent_id: str = "") -> None:
