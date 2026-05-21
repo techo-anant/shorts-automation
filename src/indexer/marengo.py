@@ -101,31 +101,32 @@ def _create_and_upload(video_name: str, video_path: Path, settings: Settings) ->
     Creates a Marengo 3.0 index, uploads the video, and polls until ready.
     Returns the TwelveLabs index_id.
 
-    NOTE: Verify SDK method signatures against the installed twelvelabs package
-    version before the first production run.
+    Verified against twelvelabs SDK 1.2.4 (2026-05).
     """
     client = TwelveLabs(api_key=settings.TWELVELABS_API_KEY)
 
     log.info("marengo_creating_index", video_name=video_name)
-    index = client.index.create(
-        name=f"shorts-{video_name[:80]}",
-        models=[{"name": "marengo3.0", "options": ["visual", "audio"]}],
+    index = client.indexes.create(
+        index_name=f"shorts-{video_name[:80]}",
+        models=[{"model_name": "marengo3.0", "model_options": ["visual", "audio"]}],
     )
     log.info("marengo_index_created", index_id=index.id)
 
     log.info("marengo_uploading_video", path=str(video_path))
-    task = client.task.create(index_id=index.id, file=str(video_path))
+    task = client.tasks.create(index_id=index.id, video_file=str(video_path))
     log.info("marengo_task_created", task_id=task.id)
 
-    def _on_progress(task) -> None:  # type: ignore[no-untyped-def]
-        log.info("marengo_index_progress", task_id=task.id, status=task.status)
+    def _on_progress(t: object) -> None:
+        log.info("marengo_index_progress", task_id=getattr(t, "id", "?"), status=getattr(t, "status", "?"))
 
-    task.wait_for_done(sleep_interval=_POLL_INTERVAL_SECONDS, callback=_on_progress)
+    final_task = client.tasks.wait_for_done(
+        task.id, sleep_interval=_POLL_INTERVAL_SECONDS, callback=_on_progress
+    )
 
-    if task.status != "ready":
+    if final_task.status != "ready":
         raise MarengoIndexError(
-            f"Marengo task {task.id} ended with unexpected status: {task.status}"
+            f"Marengo task {task.id} ended with unexpected status: {final_task.status}"
         )
 
-    log.info("marengo_index_ready", index_id=index.id, video_id=task.video_id)
+    log.info("marengo_index_ready", index_id=index.id, video_id=final_task.video_id)
     return index.id  # type: ignore[no-any-return]

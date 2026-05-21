@@ -105,11 +105,11 @@ class MarengoMomentsImpl:
             run.status = "queried"
             run.raw_response = {
                 "shorts": [
-                    {"start": c.start, "end": c.end, "score": c.score, "confidence": c.confidence}
+                    {"start": c.start, "end": c.end, "score": c.score}
                     for c in shorts_raw
                 ],
                 "highlight_reel": [
-                    {"start": c.start, "end": c.end, "score": c.score, "confidence": c.confidence}
+                    {"start": c.start, "end": c.end, "score": c.score}
                     for c in highlight_raw
                 ],
             }
@@ -121,23 +121,27 @@ def _search(client: TwelveLabs, index_id: str, query: str) -> list[_Clip]:
     """
     Synchronous — runs in a thread pool via asyncio.to_thread.
 
-    NOTE: Verify SDK method signatures against the installed twelvelabs package
-    version before the first production run.
+    Verified against twelvelabs SDK 1.2.4 (2026-05).
+    search.query returns a SyncPager[SearchItem]; results are in relevance order
+    (rank=1 is best). We invert rank to a float score so higher = better, which
+    is what _enforce_constraints expects.
     """
-    results = client.search.query(
+    pager = client.search.query(
         index_id=index_id,
         query_text=query,
-        options=["visual", "audio"],
+        search_options=["visual", "audio"],
         threshold="medium",
     )
+    items = list(pager)
     return [
         _Clip(
-            start=float(clip.start),
-            end=float(clip.end),
-            score=float(clip.score),
-            confidence=str(getattr(clip, "confidence", "medium")),
+            start=float(item.start),
+            end=float(item.end),
+            # rank is 1-based position (lower = more relevant); invert so higher score = better
+            score=1.0 / float(item.rank) if item.rank else 0.0,
+            confidence="medium",
         )
-        for clip in results.data
+        for item in items
     ]
 
 
