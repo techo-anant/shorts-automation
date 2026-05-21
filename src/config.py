@@ -28,12 +28,20 @@ class Settings(BaseSettings):
     # Discord
     DISCORD_WEBHOOK_URL: str
     DISCORD_SUCCESS_PINGS: bool = False
-
-    # Moment detection provider — switch to "pegasus" when bake-off is done
-    MOMENTS_PROVIDER: str = "marengo"
+    DISCORD_BOT_TOKEN: str
+    DISCORD_APPROVAL_CHANNEL_ID: str
+    # Hours before an unreviewed approval times out and auto-rejects
+    APPROVAL_TIMEOUT_HOURS: int = 48
 
     # Polling
     POLL_INTERVAL_SECONDS: int = 60
+
+    # FFmpeg layout recipes
+    # Fraction of 1920px height used by gameplay in blur-bg recipe (rest = blur bars).
+    # Set to 1.0 for a pure center-crop with no blur bars.
+    GAMEPLAY_CENTER_PCT: float = 0.70
+    # Fraction of 1920px height allocated to the facecam strip in the split recipe.
+    FACECAM_TOP_PCT: float = 0.30
 
     # Cost circuit breakers (USD)
     COST_WARN_USD: Decimal = Decimal("5.00")

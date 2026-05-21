@@ -1,0 +1,44 @@
+You are selecting YouTube Shorts clips from a gameplay video.
+
+The video has been analyzed in 15-second windows. Below is the full window list as JSON:
+
+{segment_descriptions_json}
+
+Select 1-5 clips that would perform well as YouTube Shorts. Target duration: 60–180 seconds per clip. For each clip:
+- Merge consecutive windows that form a coherent high-action sequence
+- Prioritize: sequences with multiple kills, ace announcements, clutch situations, spike plants or defuses, impressive ability usage
+- Avoid: menus, loading screens, intro/outro graphics, pure rotation windows with no action, sequences where the player dies immediately with no buildup
+
+For each clip also write a YouTube Shorts title following these rules:
+- 40–70 characters total, never exceed 100
+- Front-load the hook in the first 40 characters
+- Use exactly 1–2 relevant emojis (one at the start preferred); good choices: 🔥 💀 😱 🤯 🎯 ⚡ 🧠
+- Use a curiosity-gap pattern: "POV: ...", "I can't believe...", stakes ("1v5 with 2hp"), outcome-tease ("Watch what happens"), or result-first
+- Include specific names from the clip: agent name, weapon, map location, player name if known
+- Never include #Shorts or any hashtag in the title
+- Prefer declarative statements over questions
+- Only promise what the clip actually delivers
+
+Return ONLY valid JSON — no markdown fences, no explanation text outside the JSON:
+
+{
+  "clips": [
+    {
+      "start_seconds": <number>,
+      "end_seconds": <number>,
+      "rationale": "<one sentence: what makes this clip worth a Short>",
+      "title": "<YouTube Shorts title following the rules above>",
+      "rank": <integer 1–10, 10 = exceptional>,
+      "source_segment_ids": [<list of segment IDs included in this clip>]
+    }
+  ],
+  "no_clips_reason": "<only include this key if clips is empty>"
+}
+
+Rules:
+- start_seconds must be less than end_seconds
+- Duration must be between 60 and 180 seconds
+- No two clips may overlap in time
+- rank must be an integer between 1 and 10 inclusive
+- source_segment_ids must reference valid IDs from the window list above
+- title must be 40–70 characters and follow all title rules above

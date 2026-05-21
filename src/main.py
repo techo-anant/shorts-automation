@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import structlog
 from sqlalchemy import select, update
 
+from src.approval.gate import check_pending_approvals, upload_approved_shorts
 from src.config import Settings, get_settings
 from src.db.models import Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
@@ -117,6 +118,8 @@ async def reset_stuck_processing_rows() -> None:
 
 async def poll_once(drive_client: DriveClient, settings: Settings) -> None:
     await sweep_expired_indexes(settings)
+    await check_pending_approvals(settings)
+    await upload_approved_shorts(drive_client, settings)
 
     # Discover to-process/ under the configured root folder
     root_folders = await drive_client.list_subfolders(settings.DRIVE_SHORTS_ROOT_FOLDER_ID)

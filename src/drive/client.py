@@ -5,7 +5,7 @@ import structlog
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from pydantic import BaseModel
 
 from src.config import Settings
@@ -126,6 +126,52 @@ class DriveClient:
                 )
 
         log.info("drive_download_complete", file_id=file_id, dest=str(dest_path))
+
+    async def upload_file(
+        self, local_path: Path, name: str, parent_id: str, mime_type: str = "video/mp4"
+    ) -> str:
+        """Upload a local file to Drive under parent_id. Returns the new file's Drive ID."""
+
+        def _run() -> str:
+            media = MediaFileUpload(
+                str(local_path), mimetype=mime_type, resumable=True, chunksize=8 * 1024 * 1024
+            )
+            created = (
+                self._svc()
+                .files()
+                .create(
+                    body={"name": name, "parents": [parent_id]},
+                    media_body=media,
+                    fields="id",
+                )
+                .execute()
+            )
+            return created["id"]  # type: ignore[no-any-return]
+
+        file_id: str = await asyncio.to_thread(_run)
+        log.info("drive_upload_complete", file_id=file_id, name=name, parent=parent_id)
+        return file_id
+
+    async def make_public(self, file_id: str) -> str:
+        """Grant anyone-with-link read access. Returns the shareable web view URL."""
+
+        def _run() -> str:
+            self._svc().permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "anyone"},
+            ).execute()
+            return f"https://drive.google.com/file/d/{file_id}/view"
+
+        return await asyncio.to_thread(_run)
+
+    async def delete_file(self, file_id: str) -> None:
+        """Permanently delete a file from Drive."""
+
+        def _run() -> None:
+            self._svc().files().delete(fileId=file_id).execute()
+
+        await asyncio.to_thread(_run)
+        log.info("drive_file_deleted", file_id=file_id)
 
     async def move(self, file_id: str, new_parent_id: str, current_parent_id: str = "") -> None:
         def _run() -> None:

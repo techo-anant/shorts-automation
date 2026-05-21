@@ -1,0 +1,27 @@
+"""Add title field to clip_selections and shorts
+
+Revision ID: g7h8i9j0k1l2
+Revises: f6a7b8c9d0e1
+Create Date: 2026-05-21
+
+"""
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
+from alembic import op
+
+revision: str = "g7h8i9j0k1l2"
+down_revision: str | None = "f6a7b8c9d0e1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+def upgrade() -> None:
+    op.add_column("clip_selections", sa.Column("title", sa.Text(), nullable=True))
+    op.add_column("shorts", sa.Column("title", sa.Text(), nullable=True))
+
+
+def downgrade() -> None:
+    op.drop_column("shorts", "title")
+    op.drop_column("clip_selections", "title")

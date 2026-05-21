@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -49,7 +50,13 @@ class SourceVideo(Base):
     detection_runs: Mapped[list["MomentDetectionRun"]] = relationship(
         back_populates="source_video"
     )
+    segment_descriptions: Mapped[list["SegmentDescription"]] = relationship(
+        back_populates="source_video"
+    )
+    gemini_runs: Mapped[list["GeminiRun"]] = relationship(back_populates="source_video")
+    clip_selections: Mapped[list["ClipSelection"]] = relationship(back_populates="source_video")
     shorts: Mapped[list["Short"]] = relationship(back_populates="source_video")
+    approval_requests: Mapped[list["ApprovalRequest"]] = relationship(back_populates="source_video")
     cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="source_video")
 
 
@@ -75,7 +82,7 @@ class FormatProfile(Base):
 
 
 class VideoIndex(Base):
-    """Long-lived TwelveLabs index asset — created once per source video, reused across runs."""
+    """Long-lived TwelveLabs asset — created once per source video, reused across runs."""
 
     __tablename__ = "video_indexes"
 
@@ -83,13 +90,12 @@ class VideoIndex(Base):
     source_video_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("source_videos.id"), nullable=False
     )
-    # marengo | pegasus
+    # pegasus (active) | marengo (legacy v1)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    # TwelveLabs index_id — empty string while "indexing", populated when "ready"
+    # TwelveLabs asset_id for pegasus; index_id for legacy marengo rows
     index_id: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
     # indexing | ready | expired | failed
     status: Mapped[str] = mapped_column(String(50), nullable=False)
-    # RFC 3339 expiry from TwelveLabs — None if the provider doesn't expire this index
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -102,6 +108,8 @@ class VideoIndex(Base):
 
 
 class MomentDetectionRun(Base):
+    """Legacy v1 table — kept for historical data, not used in v2 pipeline."""
+
     __tablename__ = "moment_detection_runs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -111,12 +119,9 @@ class MomentDetectionRun(Base):
     video_index_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("video_indexes.id"), nullable=True
     )
-    # marengo | gemini
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    # pending | queried | failed
     status: Mapped[str] = mapped_column(String(50), nullable=False)
-    # Raw API response stored verbatim for debugging and bake-off analysis
-    raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    raw_response: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -128,6 +133,8 @@ class MomentDetectionRun(Base):
 
 
 class Moment(Base):
+    """Legacy v1 table — kept for historical data, not used in v2 pipeline."""
+
     __tablename__ = "moments"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -137,14 +144,87 @@ class Moment(Base):
     start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # shorts | highlight_reel — set by the moments provider to distinguish query results
     clip_type: Mapped[str] = mapped_column(String(50), nullable=False, server_default="shorts")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     run: Mapped["MomentDetectionRun"] = relationship(back_populates="moments")
-    short: Mapped[Optional["Short"]] = relationship(back_populates="moment")
+
+
+class GeminiRun(Base):
+    """Stores the full Gemini clip-selection request and response for debugging and prompt tuning."""
+
+    __tablename__ = "gemini_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False
+    )
+    prompt_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Stored without the video bytes — segment descriptions + prompt text only
+    request_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # pending | completed | failed
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    error_class: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="gemini_runs")
+    clip_selections: Mapped[list["ClipSelection"]] = relationship(back_populates="gemini_run")
+
+
+class SegmentDescription(Base):
+    """One row per 15-second window from the Pegasus analyze call."""
+
+    __tablename__ = "segment_descriptions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False
+    )
+    start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    announcements: Mapped[str | None] = mapped_column(Text, nullable=True)
+    events: Mapped[str | None] = mapped_column(Text, nullable=True)
+    entities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="segment_descriptions")
+
+
+class ClipSelection(Base):
+    """One row per clip chosen by Gemini — each becomes exactly one Short."""
+
+    __tablename__ = "clip_selections"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False
+    )
+    gemini_run_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("gemini_runs.id"), nullable=False
+    )
+    start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    # IDs of SegmentDescription rows merged into this clip
+    source_segment_ids: Mapped[list[int]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="clip_selections")
+    gemini_run: Mapped["GeminiRun"] = relationship(back_populates="clip_selections")
+    short: Mapped[Optional["Short"]] = relationship(back_populates="clip_selection")
 
 
 class Short(Base):
@@ -154,11 +234,9 @@ class Short(Base):
     source_video_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("source_videos.id"), nullable=False
     )
-    moment_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("moments.id"), nullable=False, unique=True
+    clip_selection_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("clip_selections.id"), nullable=True, unique=True
     )
-    # shorts | highlight_reel — mirrors Moment.clip_type
-    clip_type: Mapped[str] = mapped_column(String(50), nullable=False)
     # pending | cutting | cut | pending_approval | approved | uploading | uploaded
     # | failed | rejected | skipped
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
@@ -167,8 +245,11 @@ class Short(Base):
     youtube_video_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     cut_start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     cut_end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
-    # Populated in Phase 8 when the FFmpeg recipe is selected
     format_recipe: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Denormalized from ClipSelection for fast access without a join
+    gemini_rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gemini_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -176,13 +257,37 @@ class Short(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    __table_args__ = (
-        UniqueConstraint("source_video_id", "moment_id", name="uq_shorts_source_moment"),
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="shorts")
+    clip_selection: Mapped[Optional["ClipSelection"]] = relationship(back_populates="short")
+    approval_request: Mapped[Optional["ApprovalRequest"]] = relationship(back_populates="short")
+    cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="short")
+
+
+class ApprovalRequest(Base):
+    """One row per Short sent to Discord for operator approval."""
+
+    __tablename__ = "approval_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False
+    )
+    short_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("shorts.id"), nullable=False, unique=True
+    )
+    discord_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Drive file ID of the preview MP4 in pending-approval/
+    drive_preview_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # approved | rejected | rejected_timeout | null (pending)
+    decision: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    source_video: Mapped["SourceVideo"] = relationship(back_populates="shorts")
-    moment: Mapped["Moment"] = relationship(back_populates="short")
-    cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="short")
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="approval_requests")
+    short: Mapped["Short"] = relationship(back_populates="approval_request")
 
 
 class CostEvent(Base):
@@ -200,20 +305,17 @@ class CostEvent(Base):
     detection_run_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("moment_detection_runs.id"), nullable=True
     )
-    # e.g. ingest.format_probe | indexer.pegasus_index | moments.pegasus_query
+    # e.g. ingest.format_probe | indexer.pegasus_upload | moments.pegasus_describe | moments.gemini_select
     step: Mapped[str] = mapped_column(String(100), nullable=False)
     # e.g. google | twelvelabs | youtube
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
-    # e.g. gemini-2.5-flash | pegasus-1.2
+    # e.g. gemini-2.5-flash | pegasus-1.5
     model: Mapped[str] = mapped_column(String(100), nullable=False)
-    # Raw units consumed (tokens, minutes, api_units — semantics depend on step)
     units: Mapped[Decimal] = mapped_column(Numeric(20, 6), nullable=False)
     unit_cost_usd: Mapped[Decimal] = mapped_column(Numeric(20, 10), nullable=False)
     total_cost_usd: Mapped[Decimal] = mapped_column(Numeric(20, 10), nullable=False)
-    # Set when the provider later returns an actual billed amount; never overwrites estimate
     actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 10), nullable=True)
-    # Includes pricing_version key so stale estimates are identifiable
-    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
