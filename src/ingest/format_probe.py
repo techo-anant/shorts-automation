@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.costs.record import record_format_probe
 from src.db.models import FormatProfile, SourceVideo
+from src.errors import GeminiProbeError, GeminiQuotaError
 from src.ingest.frames import extract_sample_frames
 from src.utils.ffmpeg import VideoInfo
 
@@ -148,18 +149,24 @@ async def _analyse_frames(
     for frame_path in frame_paths:
         frame_bytes = frame_path.read_bytes()
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                types.Part.from_bytes(data=frame_bytes, mime_type="image/png"),
-                _FRAME_ANALYSIS_PROMPT,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_FrameResult,
-                temperature=0,
-            ),
-        )
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    types.Part.from_bytes(data=frame_bytes, mime_type="image/png"),
+                    _FRAME_ANALYSIS_PROMPT,
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=_FrameResult,
+                    temperature=0,
+                ),
+            )
+        except Exception as exc:
+            exc_str = str(exc).lower()
+            if "429" in exc_str or "quota" in exc_str or "resource_exhausted" in exc_str:
+                raise GeminiQuotaError(f"Gemini quota hit during format probe: {exc}") from exc
+            raise GeminiProbeError(f"Gemini frame analysis failed for {frame_path.name}: {exc}") from exc
 
         parsed: _FrameResult = response.parsed  # type: ignore[assignment]
         results.append(parsed)

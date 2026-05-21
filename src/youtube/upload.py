@@ -7,9 +7,11 @@ import structlog
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 
 from src.config import Settings
+from src.errors import YouTubeAuthError, YouTubeUploadError
 
 log = structlog.get_logger(__name__)
 
@@ -25,10 +27,6 @@ _CATEGORY_HASHTAGS: dict[str, str] = {
     "podcast":  "#Shorts #Gaming #Podcast",
 }
 _DEFAULT_HASHTAGS = "#Shorts #Gaming"
-
-
-class YouTubeUploadError(Exception):
-    pass
 
 
 def _build_service(settings: Settings):  # type: ignore[no-untyped-def]
@@ -113,6 +111,10 @@ async def upload_short(
         video_id = await asyncio.to_thread(
             _upload_video, local_path, title, description, settings
         )
+    except HttpError as exc:
+        if exc.resp.status in (401, 403):
+            raise YouTubeAuthError(f"YouTube auth error: {exc}") from exc
+        raise YouTubeUploadError(f"YouTube upload failed (HTTP {exc.resp.status}): {exc}") from exc
     except Exception as exc:
         raise YouTubeUploadError(f"YouTube upload failed: {exc}") from exc
     return video_id

@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import QuotaUsage
+from src.errors import YouTubeQuotaError
 
 log = structlog.get_logger(__name__)
 
@@ -15,15 +16,6 @@ _PROVIDER = "youtube"
 _DAILY_LIMIT = 10_000
 _UNITS_PER_UPLOAD = 1_600
 _WARN_THRESHOLD = 8_000  # 80% of daily limit
-
-
-class QuotaExhausted(Exception):
-    """Raised when the daily YouTube quota would be exceeded by this upload."""
-
-    def __init__(self, used: int, limit: int) -> None:
-        self.used = used
-        self.limit = limit
-        super().__init__(f"YouTube quota exhausted: {used}/{limit} units used today")
 
 
 async def check_and_reserve_upload_quota(session: AsyncSession) -> int:
@@ -44,7 +36,10 @@ async def check_and_reserve_upload_quota(session: AsyncSession) -> int:
     current = row.units_used if row is not None else 0
 
     if current + _UNITS_PER_UPLOAD > _DAILY_LIMIT:
-        raise QuotaExhausted(current, _DAILY_LIMIT)
+        raise YouTubeQuotaError(
+            f"YouTube quota exhausted: {current}/{_DAILY_LIMIT} units used today. "
+            "Approved shorts will upload tomorrow."
+        )
 
     # Upsert: create or increment
     stmt = insert(QuotaUsage).values(

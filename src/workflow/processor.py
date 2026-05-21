@@ -12,13 +12,14 @@ from src.costs.record import get_cost_breakdown, get_source_total_cost
 from src.db.models import FormatProfile, Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
+from src.errors import FFmpegProbeError, PipelineError
 from src.ffmpeg.cut import cut_short
 from src.ffmpeg.recipes import select_recipe
 from src.indexer.pegasus import get_or_upload_asset
 from src.ingest.format_probe import FormatProbeResult, run_format_probe
 from src.moments.pipeline import run_clip_selection
 from src.notifications.discord import send_error, send_message
-from src.utils.ffmpeg import probe_video
+from src.utils.ffmpeg import FFmpegError, probe_video
 
 log = structlog.get_logger(__name__)
 
@@ -152,7 +153,10 @@ async def _cut_all_shorts(
         return
 
     recipe = select_recipe(source_video.category, profile, settings)
-    info = await probe_video(local_path)
+    try:
+        info = await probe_video(local_path)
+    except FFmpegError as exc:
+        raise FFmpegProbeError(f"ffprobe failed during cut phase: {exc}") from exc
     log.info(
         "cutting_shorts",
         source_id=source_video.id,
@@ -236,7 +240,10 @@ async def process_source_video(
                 await session.commit()
 
             # --- Format probe (Gemini) ---
-            info = await probe_video(local_path)
+            try:
+                info = await probe_video(local_path)
+            except FFmpegError as exc:
+                raise FFmpegProbeError(f"ffprobe failed for {source_video.name}: {exc}") from exc
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
                 format_result = await run_format_probe(
@@ -339,12 +346,28 @@ async def process_source_video(
         )
         await _move_to_failed(source_video, drive_client, settings)
 
-    except Exception as exc:
-        log.exception("source_video_failed", source_id=source_video.id, name=source_video.name)
-        await _mark_status(source_video.id, "failed", error_message=repr(exc))
+    except PipelineError as exc:
+        log.error(
+            "source_video_pipeline_error",
+            source_id=source_video.id,
+            step=exc.step,
+            provider=exc.provider,
+            error=str(exc),
+        )
+        await _mark_status(source_video.id, "failed", error_message=str(exc))
         await send_error(
             settings.DISCORD_WEBHOOK_URL,
             title=f"Pipeline error: {source_video.name}",
+            description=exc.to_discord(),
+        )
+        await _move_to_failed(source_video, drive_client, settings)
+
+    except Exception as exc:
+        log.exception("source_video_unexpected_error", source_id=source_video.id, name=source_video.name)
+        await _mark_status(source_video.id, "failed", error_message=repr(exc))
+        await send_error(
+            settings.DISCORD_WEBHOOK_URL,
+            title=f"Unexpected error: {source_video.name}",
             description=f"{type(exc).__name__}: {exc}",
         )
         await _move_to_failed(source_video, drive_client, settings)

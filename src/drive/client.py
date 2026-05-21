@@ -2,13 +2,16 @@ import asyncio
 from pathlib import Path
 
 import structlog
+from google.auth import exceptions as google_auth_exceptions
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 from pydantic import BaseModel
 
 from src.config import Settings
+from src.errors import DriveAuthError, DriveDownloadError, DriveUploadError
 
 log = structlog.get_logger(__name__)
 
@@ -114,13 +117,20 @@ class DriveClient:
                             pct=round(status.progress() * 100),
                         )
 
-        await asyncio.to_thread(_run)
+        try:
+            await asyncio.to_thread(_run)
+        except google_auth_exceptions.TransportError as exc:
+            raise DriveAuthError(f"Drive OAuth error downloading {file_id}: {exc}") from exc
+        except HttpError as exc:
+            if exc.resp.status in (401, 403):
+                raise DriveAuthError(f"Drive permission error downloading {file_id}: {exc}") from exc
+            raise DriveDownloadError(f"Drive download failed for {file_id}: {exc}") from exc
 
         if expected_size is not None:
             actual_size = dest_path.stat().st_size
             if actual_size != expected_size:
                 dest_path.unlink(missing_ok=True)
-                raise RuntimeError(
+                raise DriveDownloadError(
                     f"Drive download truncated: expected {expected_size} bytes,"
                     f" got {actual_size} (file_id={file_id})"
                 )
@@ -148,7 +158,14 @@ class DriveClient:
             )
             return created["id"]  # type: ignore[no-any-return]
 
-        file_id: str = await asyncio.to_thread(_run)
+        try:
+            file_id: str = await asyncio.to_thread(_run)
+        except google_auth_exceptions.TransportError as exc:
+            raise DriveAuthError(f"Drive OAuth error uploading {name}: {exc}") from exc
+        except HttpError as exc:
+            if exc.resp.status in (401, 403):
+                raise DriveAuthError(f"Drive permission error uploading {name}: {exc}") from exc
+            raise DriveUploadError(f"Drive upload failed for {name}: {exc}") from exc
         log.info("drive_upload_complete", file_id=file_id, name=name, parent=parent_id)
         return file_id
 

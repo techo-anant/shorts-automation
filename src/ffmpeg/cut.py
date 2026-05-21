@@ -9,8 +9,9 @@ from pathlib import Path
 
 import structlog
 
+from src.errors import FFmpegCutError
 from src.ffmpeg.recipes import OUTPUT_HEIGHT, OUTPUT_WIDTH, CutRecipe
-from src.utils.ffmpeg import VideoInfo, run_ffmpeg
+from src.utils.ffmpeg import FFmpegError, VideoInfo, run_ffmpeg
 
 log = structlog.get_logger(__name__)
 
@@ -35,14 +36,17 @@ async def cut_short(
         output=str(output_path),
     )
 
-    if recipe.name == "blur_bg":
-        await _cut_blur_bg(source_path, output_path, start_seconds, end_seconds, recipe, info)
-    elif recipe.name == "split":
-        await _cut_split(source_path, output_path, start_seconds, end_seconds, recipe, info)
-    elif recipe.name == "passthrough":
-        await _cut_passthrough(source_path, output_path, start_seconds, end_seconds)
-    else:
-        raise ValueError(f"Unknown recipe: {recipe.name}")
+    try:
+        if recipe.name == "blur_bg":
+            await _cut_blur_bg(source_path, output_path, start_seconds, end_seconds, recipe, info)
+        elif recipe.name == "split":
+            await _cut_split(source_path, output_path, start_seconds, end_seconds, recipe, info)
+        elif recipe.name == "passthrough":
+            await _cut_passthrough(source_path, output_path, start_seconds, end_seconds)
+        else:
+            raise ValueError(f"Unknown recipe: {recipe.name}")
+    except FFmpegError as exc:
+        raise FFmpegCutError(f"FFmpeg cut failed [{recipe.name}]: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

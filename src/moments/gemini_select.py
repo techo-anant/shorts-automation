@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import Settings
 from src.costs.record import record_gemini_select
 from src.db.models import ClipSelection, GeminiRun, SegmentDescription, Short, SourceVideo
+from src.errors import GeminiQuotaError, GeminiSelectionError
 from src.utils.ffmpeg import VideoInfo
 
 log = structlog.get_logger(__name__)
@@ -20,10 +21,6 @@ _MAX_DURATION = 180.0   # seconds — YouTube Shorts hard cap
 _MIN_SANITY = 3.0       # absolute minimum to discard obviously broken clips
 
 _PROMPT_VERSION = "gameplay-v1"
-
-
-class GeminiSelectError(Exception):
-    pass
 
 
 async def select_clips(
@@ -86,7 +83,12 @@ async def select_clips(
         gemini_run.error_class = type(exc).__name__
         gemini_run.error_message = str(exc)[:2000]
         await session.flush()
-        raise GeminiSelectError(f"Gemini clip selection failed: {exc}") from exc
+        if isinstance(exc, GeminiSelectionError):
+            raise
+        exc_str = str(exc).lower()
+        if "429" in exc_str or "quota" in exc_str or "resource_exhausted" in exc_str:
+            raise GeminiQuotaError(f"Gemini quota hit during clip selection: {exc}") from exc
+        raise GeminiSelectionError(f"Gemini clip selection failed: {exc}") from exc
 
     validated = _validate_clips(parsed, info.duration_seconds)
     log.info(
@@ -141,14 +143,14 @@ def _parse_response(raw_text: str) -> list[dict[str, Any]]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise GeminiSelectError(f"Gemini returned non-JSON: {exc}\n---\n{raw_text[:500]}") from exc
+        raise GeminiSelectionError(f"Gemini returned non-JSON: {exc}\n---\n{raw_text[:500]}") from exc
 
     if not isinstance(parsed, dict):
-        raise GeminiSelectError(f"Expected JSON object, got {type(parsed).__name__}")
+        raise GeminiSelectionError(f"Expected JSON object, got {type(parsed).__name__}")
 
     clips = parsed.get("clips", [])
     if not isinstance(clips, list):
-        raise GeminiSelectError("'clips' field is not a list")
+        raise GeminiSelectionError("'clips' field is not a list")
 
     return clips
 
@@ -260,7 +262,6 @@ def _segments_to_json(segments: list[SegmentDescription]) -> str:
 
 def _default_prompt_template() -> str:
     return (
-        "You are selecting YouTube Shorts clips from a gameplay video.\n\n"
         "You are selecting YouTube Shorts clips from a gameplay video.\n\n"
         "The video has been analyzed in 10-second windows. "
         "Below is the full window list as JSON:\n\n"

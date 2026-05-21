@@ -24,9 +24,10 @@ from src.costs.record import record_youtube_upload
 from src.db.models import ApprovalRequest, Short, SourceVideo
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
+from src.errors import YouTubeQuotaError, YouTubeUploadError
 from src.notifications.discord import send_error
-from src.youtube.quota import QuotaExhausted, check_and_reserve_upload_quota
-from src.youtube.upload import YouTubeUploadError, upload_short
+from src.youtube.quota import check_and_reserve_upload_quota
+from src.youtube.upload import upload_short
 
 log = structlog.get_logger(__name__)
 
@@ -222,20 +223,12 @@ async def upload_approved_shorts(
             try:
                 await check_and_reserve_upload_quota(session)
                 await session.commit()
-            except QuotaExhausted as exc:
-                log.warning(
-                    "youtube_quota_exhausted",
-                    short_id=short.id,
-                    used=exc.used,
-                    limit=exc.limit,
-                )
+            except YouTubeQuotaError as exc:
+                log.warning("youtube_quota_exhausted", short_id=short.id)
                 await send_error(
                     settings.DISCORD_WEBHOOK_URL,
                     title="YouTube quota exhausted",
-                    description=(
-                        f"{exc.used}/{exc.limit} units used today. "
-                        "Approved shorts will upload tomorrow."
-                    ),
+                    description=str(exc),
                 )
                 return
 

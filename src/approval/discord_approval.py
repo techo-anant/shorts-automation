@@ -9,6 +9,8 @@ import urllib.parse
 import aiohttp
 import structlog
 
+from src.errors import DiscordPostError, DiscordReactionError
+
 log = structlog.get_logger(__name__)
 
 _API = "https://discord.com/api/v10"
@@ -23,12 +25,17 @@ def _headers(bot_token: str) -> dict[str, str]:
 async def post_message(channel_id: str, bot_token: str, content: str) -> str:
     """Post a message to a channel. Returns the Discord message ID."""
     url = f"{_API}/channels/{channel_id}/messages"
-    async with aiohttp.ClientSession() as session, session.post(
-        url, json={"content": content}, headers=_headers(bot_token)
-    ) as resp:
-        resp.raise_for_status()
-        data = await resp.json()
-        return str(data["id"])
+    try:
+        async with aiohttp.ClientSession() as session, session.post(
+            url, json={"content": content}, headers=_headers(bot_token)
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return str(data["id"])
+    except aiohttp.ClientResponseError as exc:
+        raise DiscordPostError(f"Discord post failed (HTTP {exc.status}): {exc.message}") from exc
+    except Exception as exc:
+        raise DiscordPostError(f"Discord post failed: {exc}") from exc
 
 
 async def add_approval_reactions(
@@ -38,8 +45,15 @@ async def add_approval_reactions(
     for emoji in (_APPROVE_EMOJI, _REJECT_EMOJI):
         encoded = urllib.parse.quote(emoji)
         url = f"{_API}/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
-        async with aiohttp.ClientSession() as http, http.put(url, headers=_headers(bot_token)) as resp:
-            resp.raise_for_status()
+        try:
+            async with aiohttp.ClientSession() as http, http.put(url, headers=_headers(bot_token)) as resp:
+                resp.raise_for_status()
+        except aiohttp.ClientResponseError as exc:
+            raise DiscordReactionError(
+                f"Discord reaction failed for message {message_id} (HTTP {exc.status}): {exc.message}"
+            ) from exc
+        except Exception as exc:
+            raise DiscordReactionError(f"Discord reaction failed for message {message_id}: {exc}") from exc
 
 
 async def get_reaction_user_ids(

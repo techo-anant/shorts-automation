@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
-from twelvelabs import TwelveLabs
+from twelvelabs import TooManyRequestsError, TwelveLabs
 from twelvelabs.types import (
     AsyncResponseFormat,
     SegmentDefinition,
@@ -18,6 +18,7 @@ from twelvelabs.types import (
 from src.config import Settings
 from src.costs.record import record_pegasus_describe
 from src.db.models import SegmentDescription, SourceVideo
+from src.errors import PegasusDescribeError, PegasusQuotaError
 from src.utils.ffmpeg import VideoInfo
 
 log = structlog.get_logger(__name__)
@@ -32,10 +33,6 @@ _SEGMENT_DESCRIPTION = (
     "Cover the entire video with no gaps. For each window describe what is happening — "
     "including gameplay events, audio announcements, and what is visible on screen."
 )
-
-
-class PegasusDescribeError(Exception):
-    pass
 
 
 async def describe_video(
@@ -54,10 +51,16 @@ async def describe_video(
     if prompt_path is not None and prompt_path.exists():
         description_text = prompt_path.read_text(encoding="utf-8").strip()
 
-    result_data, output_tokens = await asyncio.wait_for(
-        asyncio.to_thread(_call_analyze, asset_id, description_text, settings),
-        timeout=_ANALYZE_TIMEOUT_SECONDS,
-    )
+    try:
+        result_data, output_tokens = await asyncio.wait_for(
+            asyncio.to_thread(_call_analyze, asset_id, description_text, settings),
+            timeout=_ANALYZE_TIMEOUT_SECONDS,
+        )
+    except TimeoutError as err:
+        raise PegasusDescribeError(
+            f"Pegasus analyze timed out after {_ANALYZE_TIMEOUT_SECONDS}s "
+            f"(source {source_video.id})"
+        ) from err
 
     windows = _parse_windows(result_data)
     log.info(
@@ -104,81 +107,92 @@ def _call_analyze(
     """
     client = TwelveLabs(api_key=settings.TWELVELABS_API_KEY)
 
-    task = client.analyze_async.tasks.create(
-        model_name="pegasus1.5",
-        video=VideoContext_AssetId(asset_id=asset_id),
-        analysis_mode="time_based_metadata",
-        response_format=AsyncResponseFormat(
-            type="segment_definitions",
-            segment_definitions=[
-                SegmentDefinition(
-                    id="segment_windows",
-                    description=description_text,
-                    fields=[
-                        SegmentField(
-                            name="start",
-                            type="string",
-                            description="Start time of the 10-second window in seconds.",
-                        ),
-                        SegmentField(
-                            name="end",
-                            type="string",
-                            description="End time of the 10-second window in seconds.",
-                        ),
-                        SegmentField(
-                            name="description",
-                            type="string",
-                            description=(
-                                "One-to-two sentence description of what is happening in this "
-                                "window including gameplay events and audio. Be specific — name "
-                                "map locations, agent abilities, and outcomes. "
-                                "Do not repeat generic phrases."
+    try:
+        task = client.analyze_async.tasks.create(
+            model_name="pegasus1.5",
+            video=VideoContext_AssetId(asset_id=asset_id),
+            analysis_mode="time_based_metadata",
+            response_format=AsyncResponseFormat(
+                type="segment_definitions",
+                segment_definitions=[
+                    SegmentDefinition(
+                        id="segment_windows",
+                        description=description_text,
+                        fields=[
+                            SegmentField(
+                                name="start",
+                                type="string",
+                                description="Start time of the 10-second window in seconds.",
                             ),
-                        ),
-                        SegmentField(
-                            name="announcements",
-                            type="string",
-                            description=(
-                                "Comma-separated list of any in-game audio announcements or "
-                                "on-screen callouts heard or seen in this window. Examples: "
-                                "'Ace', 'Spike planted', 'Spike defused', 'Round won', "
-                                "'Round lost', 'Clutch', 'First blood', 'Flawless', 'Thrifty', "
-                                "'Comeback'. Write 'None' if no announcements occur."
+                            SegmentField(
+                                name="end",
+                                type="string",
+                                description="End time of the 10-second window in seconds.",
                             ),
-                        ),
-                        SegmentField(
-                            name="events",
-                            type="string",
-                            description=(
-                                "Comma-separated list of discrete events that occur in this "
-                                "window. Examples: 'Kill: Reyna eliminated Brimstone', "
-                                "'Player died', 'Ability used: Dismiss', 'Spike planted', "
-                                "'Rotation only'. If nothing notable happens write 'Rotation only'."
+                            SegmentField(
+                                name="description",
+                                type="string",
+                                description=(
+                                    "One-to-two sentence description of what is happening in this "
+                                    "window including gameplay events and audio. Be specific — name "
+                                    "map locations, agent abilities, and outcomes. "
+                                    "Do not repeat generic phrases."
+                                ),
                             ),
-                        ),
-                        SegmentField(
-                            name="entities",
-                            type="string",
-                            description=(
-                                "Comma-separated list of specific visual entities visible on "
-                                "screen: agent names, weapons, UI elements (kill feed, scoreboard, "
-                                "minimap, round timer), overlays (webcam, health bar)."
+                            SegmentField(
+                                name="announcements",
+                                type="string",
+                                description=(
+                                    "Comma-separated list of any in-game audio announcements or "
+                                    "on-screen callouts heard or seen in this window. Examples: "
+                                    "'Ace', 'Spike planted', 'Spike defused', 'Round won', "
+                                    "'Round lost', 'Clutch', 'First blood', 'Flawless', 'Thrifty', "
+                                    "'Comeback'. Write 'None' if no announcements occur."
+                                ),
                             ),
-                        ),
-                    ],
-                )
-            ],
-        ),
-        temperature=0.2,
-        max_tokens=_MAX_OUTPUT_TOKENS,
-    )
+                            SegmentField(
+                                name="events",
+                                type="string",
+                                description=(
+                                    "Comma-separated list of discrete events that occur in this "
+                                    "window. Examples: 'Kill: Reyna eliminated Brimstone', "
+                                    "'Player died', 'Ability used: Dismiss', 'Spike planted', "
+                                    "'Rotation only'. If nothing notable happens write 'Rotation only'."
+                                ),
+                            ),
+                            SegmentField(
+                                name="entities",
+                                type="string",
+                                description=(
+                                    "Comma-separated list of specific visual entities visible on "
+                                    "screen: agent names, weapons, UI elements (kill feed, scoreboard, "
+                                    "minimap, round timer), overlays (webcam, health bar)."
+                                ),
+                            ),
+                        ],
+                    )
+                ],
+            ),
+            temperature=0.2,
+            max_tokens=_MAX_OUTPUT_TOKENS,
+        )
+    except TooManyRequestsError as err:
+        raise PegasusQuotaError(f"TwelveLabs rate limit on task create: {err}") from err
+    except Exception as err:
+        raise PegasusDescribeError(f"Pegasus task creation failed for asset {asset_id}: {err}") from err
 
     task_id: str = task.task_id
     log.info("pegasus_analyze_task_created", task_id=task_id, asset_id=asset_id)
 
     deadline = time.monotonic() + _ANALYZE_TIMEOUT_SECONDS
     while True:
-        current = client.analyze_async.tasks.retrieve(task_id)
+        try:
+            current = client.analyze_async.tasks.retrieve(task_id)
+        except TooManyRequestsError as err:
+            raise PegasusQuotaError(f"TwelveLabs rate limit while polling {task_id}: {err}") from err
+        except Exception as err:
+            raise PegasusDescribeError(f"Pegasus poll failed for task {task_id}: {err}") from err
+
         status = getattr(current, "status", "unknown")
         log.info("pegasus_analyze_poll", task_id=task_id, status=status)
 
