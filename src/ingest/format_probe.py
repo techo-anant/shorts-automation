@@ -5,6 +5,7 @@ import structlog
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import Settings
@@ -75,7 +76,23 @@ async def run_format_probe(
     Extract 5 frames, send each to Gemini Flash for facecam/format analysis,
     aggregate results, write FormatProfile + CostEvent rows, and return the result.
     Frame files are deleted before this function returns.
+    Idempotent: returns the existing profile if one was already written for this source.
     """
+    existing = await session.execute(
+        select(FormatProfile).where(FormatProfile.source_video_id == source_video.id)
+    )
+    existing_profile = existing.scalar_one_or_none()
+    if existing_profile is not None:
+        log.info("format_probe_reused", source_id=source_video.id)
+        return FormatProbeResult(
+            has_facecam=existing_profile.has_facecam,
+            facecam_position=existing_profile.facecam_position,
+            facecam_size_pct=existing_profile.facecam_size_pct,
+            source_aspect_ratio=existing_profile.source_aspect_ratio,
+            is_already_vertical=existing_profile.is_already_vertical,
+            facecam_unstable=existing_profile.facecam_unstable,
+        )
+
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     with tempfile.TemporaryDirectory() as frame_dir:

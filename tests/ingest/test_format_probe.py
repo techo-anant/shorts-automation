@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.db.models import FormatProfile
 from src.ingest.format_probe import (
     FormatProbeResult,
     _aggregate_frame_results,
@@ -109,10 +110,18 @@ class TestAggregateFrameResults:
         assert result.facecam_size_pct is None
 
 
+def _make_session(existing_profile: FormatProfile | None = None) -> AsyncMock:
+    session = AsyncMock()
+    session.add = MagicMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = existing_profile
+    session.execute.return_value = mock_result
+    return session
+
+
 class TestRunFormatProbe:
     async def test_creates_format_profile_and_cost_event_on_success(self) -> None:
-        session = AsyncMock()
-        session.add = MagicMock()
+        session = _make_session(existing_profile=None)
 
         source_video = MagicMock()
         source_video.id = 7
@@ -150,8 +159,36 @@ class TestRunFormatProbe:
         # session.add called twice: FormatProfile row + CostEvent row
         assert session.add.call_count == 2
 
+    async def test_returns_existing_profile_without_calling_gemini(self) -> None:
+        existing = FormatProfile(
+            source_video_id=7,
+            has_facecam=True,
+            facecam_position="top-right",
+            facecam_size_pct=10.0,
+            source_aspect_ratio="16:9",
+            is_already_vertical=False,
+            facecam_unstable=False,
+        )
+        session = _make_session(existing_profile=existing)
+        source_video = MagicMock()
+        source_video.id = 7
+
+        with patch("src.ingest.format_probe._analyse_frames", new_callable=AsyncMock) as mock_analyse:
+            result = await run_format_probe(
+                session=session,
+                source_video=source_video,
+                video_path=Path("/tmp/test.mp4"),
+                info=_info(),
+                settings=MagicMock(),
+            )
+
+        mock_analyse.assert_not_called()
+        session.add.assert_not_called()
+        assert result.has_facecam is True
+        assert result.source_aspect_ratio == "16:9"
+
     async def test_propagates_exception_from_gemini(self) -> None:
-        session = AsyncMock()
+        session = _make_session(existing_profile=None)
         source_video = MagicMock()
         source_video.id = 1
         settings = MagicMock()
