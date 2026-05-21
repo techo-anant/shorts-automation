@@ -28,7 +28,7 @@ _MAX_OUTPUT_TOKENS = 65536
 
 # Prompt template is the segment_definitions description; fields are fixed per the agreed schema.
 _SEGMENT_DESCRIPTION = (
-    "Describe this video in 15-second windows from start to finish. "
+    "Describe this video in 10-second windows from start to finish. "
     "Cover the entire video with no gaps. For each window describe what is happening — "
     "including gameplay events, audio announcements, and what is visible on screen."
 )
@@ -48,7 +48,7 @@ async def describe_video(
 ) -> list[SegmentDescription]:
     """
     Calls Pegasus analyze_async on the given asset, polls until complete, parses the
-    15-second window output, and persists SegmentDescription rows.  Returns the saved rows.
+    10-second window output, and persists SegmentDescription rows.  Returns the saved rows.
     """
     description_text = _SEGMENT_DESCRIPTION
     if prompt_path is not None and prompt_path.exists():
@@ -118,12 +118,12 @@ def _call_analyze(
                         SegmentField(
                             name="start",
                             type="string",
-                            description="Start time of the 15-second window in seconds.",
+                            description="Start time of the 10-second window in seconds.",
                         ),
                         SegmentField(
                             name="end",
                             type="string",
-                            description="End time of the 15-second window in seconds.",
+                            description="End time of the 10-second window in seconds.",
                         ),
                         SegmentField(
                             name="description",

@@ -178,7 +178,7 @@ class GeminiRun(Base):
 
 
 class SegmentDescription(Base):
-    """One row per 15-second window from the Pegasus analyze call."""
+    """One row per 10-second window from the Pegasus analyze call."""
 
     __tablename__ = "segment_descriptions"
 

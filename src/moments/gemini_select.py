@@ -1,5 +1,4 @@
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +14,6 @@ from src.utils.ffmpeg import VideoInfo
 log = structlog.get_logger(__name__)
 
 _GEMINI_MODEL = "gemini-2.5-flash"
-_FILE_UPLOAD_POLL_INTERVAL = 5
-_FILE_UPLOAD_TIMEOUT = 10 * 60
 
 _MIN_DURATION = 60.0    # seconds — YouTube Shorts floor
 _MAX_DURATION = 180.0   # seconds — YouTube Shorts hard cap
@@ -30,7 +27,6 @@ class GeminiSelectError(Exception):
 
 
 async def select_clips(
-    video_path: Path,
     segments: list[SegmentDescription],
     source_video: SourceVideo,
     info: VideoInfo,
@@ -61,13 +57,10 @@ async def select_clips(
     session.add(gemini_run)
     await session.flush()
 
-    video_file = None
     try:
-        video_file = _upload_and_wait(client, video_path)
-
         response = client.models.generate_content(
             model=_GEMINI_MODEL,
-            contents=[video_file, prompt_text],
+            contents=[prompt_text],
         )
 
         raw_text: str = response.text or ""
@@ -94,12 +87,6 @@ async def select_clips(
         gemini_run.error_message = str(exc)[:2000]
         await session.flush()
         raise GeminiSelectError(f"Gemini clip selection failed: {exc}") from exc
-    finally:
-        if video_file is not None and video_file.name is not None:
-            try:
-                client.files.delete(name=video_file.name)
-            except Exception:
-                log.warning("gemini_file_delete_failed", file_name=video_file.name)
 
     validated = _validate_clips(parsed, info.duration_seconds)
     log.info(
@@ -141,32 +128,6 @@ async def select_clips(
 
     await session.flush()
     return shorts
-
-
-def _upload_and_wait(client: genai.Client, video_path: Path) -> Any:
-    """Upload video to Gemini Files API and poll until state is ACTIVE."""
-    log.info("gemini_uploading_video", path=str(video_path))
-    video_file = client.files.upload(file=str(video_path))
-    log.info("gemini_upload_submitted", file_name=video_file.name)
-
-    deadline = time.monotonic() + _FILE_UPLOAD_TIMEOUT
-    while True:
-        state = getattr(video_file.state, "name", str(video_file.state))
-        if state == "ACTIVE":
-            log.info("gemini_file_active", file_name=video_file.name)
-            return video_file
-        if state == "FAILED":
-            raise GeminiSelectError(
-                f"Gemini Files API reported FAILED state for {video_file.name}"
-            )
-        if time.monotonic() >= deadline:
-            raise GeminiSelectError(
-                f"Gemini file {video_file.name} did not become ACTIVE within {_FILE_UPLOAD_TIMEOUT}s"
-            )
-        log.info("gemini_file_processing", file_name=video_file.name, state=state)
-        time.sleep(_FILE_UPLOAD_POLL_INTERVAL)
-        assert video_file.name is not None
-        video_file = client.files.get(name=video_file.name)
 
 
 def _parse_response(raw_text: str) -> list[dict[str, Any]]:
@@ -300,12 +261,9 @@ def _segments_to_json(segments: list[SegmentDescription]) -> str:
 def _default_prompt_template() -> str:
     return (
         "You are selecting YouTube Shorts clips from a gameplay video.\n\n"
-        "You have been provided the source video AND a time-coded analysis of it "
-        "in 15-second windows. Use the window analysis to locate where action happens, "
-        "then use the video to confirm timestamps and fine-tune exact start/end points. "
-        "The video is a visual aid — do not use it to raise the bar for selection. "
-        "Be generous: if the window analysis describes good action, select it.\n\n"
-        "Window analysis:\n"
+        "You are selecting YouTube Shorts clips from a gameplay video.\n\n"
+        "The video has been analyzed in 10-second windows. "
+        "Below is the full window list as JSON:\n\n"
         "{segment_descriptions_json}\n\n"
         "Select 1-5 clips that would perform well as YouTube Shorts "
         "(target 60-180 seconds per clip). For each clip:\n"
@@ -314,7 +272,7 @@ def _default_prompt_template() -> str:
         "spike plants or defuses, impressive ability usage\n"
         "- Avoid: menus, loading screens, intro/outro, pure rotation with no action\n\n"
         "Timestamp rules:\n"
-        "- start_seconds and end_seconds do NOT need to align with the 15-second window "
+        "- start_seconds and end_seconds do NOT need to align with the 10-second window "
         "boundaries — pick the precise second where the action starts and ends\n"
         "- If a powerful sequence is about to begin (first kill incoming, ability about to "
         "pop, spike about to detonate), pad start_seconds back by 1–2 seconds so the viewer "

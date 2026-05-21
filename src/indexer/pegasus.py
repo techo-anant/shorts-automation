@@ -88,6 +88,9 @@ async def get_or_upload_asset(
     video_index.status = "ready"
     await session.flush()
 
+    video_path.unlink(missing_ok=True)
+    log.info("local_video_deleted_after_upload", source_id=source_video.id)
+
     return video_index
 
 
