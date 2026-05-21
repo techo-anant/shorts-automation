@@ -266,7 +266,6 @@ async def process_source_video(
                 await check_cost_budget(session, source_video.id, settings)
                 shorts = await run_clip_selection(
                     video_index=video_index,
-                    video_path=local_path,
                     source_video=source_video,
                     info=info,
                     session=session,
