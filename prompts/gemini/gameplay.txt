@@ -1,13 +1,17 @@
 You are selecting YouTube Shorts clips from a gameplay video.
 
-The video has been analyzed in 15-second windows. Below is the full window list as JSON:
+You have been provided the source video AND a time-coded analysis of it in 15-second windows. Use both to make your selections: watch the actual footage to judge visual impact, clarity, and excitement, and use the window analysis to locate precise timestamps.
+
+Window analysis:
 
 {segment_descriptions_json}
 
 Select 1-5 clips that would perform well as YouTube Shorts. Target duration: 60–180 seconds per clip. For each clip:
 - Merge consecutive windows that form a coherent high-action sequence
-- Prioritize: sequences with multiple kills, ace announcements, clutch situations, spike plants or defuses, impressive ability usage
+- Prioritize: sequences with multiple kills, ace announcements, clutch situations, spike plants or defuses, impressive ability usage — judge by what you actually see in the video
 - Avoid: menus, loading screens, intro/outro graphics, pure rotation windows with no action, sequences where the player dies immediately with no buildup
+- start_seconds and end_seconds do NOT need to align with the 15-second window boundaries — use the window analysis to locate action, then watch the video and pick the precise second where the clip should start and end. For example if a sequence starts mid-window at 37 seconds, use 37, not 30 or 45.
+- If a powerful sequence is about to begin (first kill incoming, ability about to pop, spike about to detonate), pad start_seconds back by 1–2 seconds so the viewer has a beat to focus before the action lands. Similarly pad end_seconds forward by 1–2 seconds after the final moment so the sequence lands cleanly rather than cutting off abruptly.
 
 For each clip also write a YouTube Shorts title following these rules:
 - 40–70 characters total, never exceed 100

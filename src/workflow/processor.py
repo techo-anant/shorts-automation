@@ -248,7 +248,7 @@ async def process_source_video(
                 )
                 await session.commit()
 
-            # --- Pegasus upload (deletes local file after upload confirmed) ---
+            # --- Pegasus upload ---
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
                 video_index: VideoIndex = await get_or_upload_asset(
@@ -259,19 +259,22 @@ async def process_source_video(
                 )
                 await session.commit()
 
-            # local_path deleted by uploader; TemporaryDirectory cleans empty dir on exit.
-
-            # --- Clip selection (Pegasus describe + Gemini select) ---
+            # --- Clip selection (Pegasus describe + Gemini select with video) ---
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
                 shorts = await run_clip_selection(
                     video_index=video_index,
+                    video_path=local_path,
                     source_video=source_video,
                     info=info,
                     session=session,
                     settings=settings,
                 )
                 await session.commit()
+
+            # Delete local copy now that Pegasus has its own copy and Gemini is done.
+            local_path.unlink(missing_ok=True)
+            log.info("local_video_deleted", source_id=source_video.id)
 
         # --- FFmpeg cut + reformat → approval gate ---
         if shorts:

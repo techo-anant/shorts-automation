@@ -16,6 +16,7 @@ _PROMPTS_ROOT = Path(__file__).parent.parent.parent / "prompts"
 
 async def run_clip_selection(
     video_index: VideoIndex,
+    video_path: Path,
     source_video: SourceVideo,
     info: VideoInfo,
     session: AsyncSession,
@@ -56,6 +57,7 @@ async def run_clip_selection(
         return []
 
     shorts: list[Short] = await select_clips(
+        video_path=video_path,
         segments=segments,
         source_video=source_video,
         info=info,
