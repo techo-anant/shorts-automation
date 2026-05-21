@@ -82,7 +82,7 @@ def upgrade() -> None:
 
     # Migrate shorts: drop moment_id, add clip_selection_id + gemini columns
     op.drop_constraint("uq_shorts_source_moment", "shorts", type_="unique")
-    op.drop_constraint("shorts_moment_id_key", "shorts", type_="unique")
+    op.drop_constraint("uq_shorts_moment_id", "shorts", type_="unique")
     op.drop_constraint("shorts_moment_id_fkey", "shorts", type_="foreignkey")
     op.drop_column("shorts", "moment_id")
     op.drop_column("shorts", "clip_type")
