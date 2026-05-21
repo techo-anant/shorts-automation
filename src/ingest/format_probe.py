@@ -17,6 +17,20 @@ from src.utils.ffmpeg import VideoInfo
 
 log = structlog.get_logger(__name__)
 
+# Gemini HTTP/gRPC status strings that indicate quota or billing limits.
+_GEMINI_QUOTA_SIGNALS = frozenset({
+    "429",
+    "resource_exhausted",
+    "quota",
+    "failed_precondition",  # 400: billing not enabled / free tier unavailable
+    "billing",
+})
+
+
+def _is_gemini_quota_error(exc: Exception) -> bool:
+    exc_str = str(exc).lower()
+    return any(signal in exc_str for signal in _GEMINI_QUOTA_SIGNALS)
+
 # Facecam detection requires ≥ this many frames to agree before we trust the result.
 # If fewer agree, we mark the profile as unstable and default has_facecam=False.
 _FACECAM_AGREEMENT_THRESHOLD = 4
@@ -163,9 +177,8 @@ async def _analyse_frames(
                 ),
             )
         except Exception as exc:
-            exc_str = str(exc).lower()
-            if "429" in exc_str or "quota" in exc_str or "resource_exhausted" in exc_str:
-                raise GeminiQuotaError(f"Gemini quota hit during format probe: {exc}") from exc
+            if _is_gemini_quota_error(exc):
+                raise GeminiQuotaError(f"Gemini quota/billing issue during format probe: {exc}") from exc
             raise GeminiProbeError(f"Gemini frame analysis failed for {frame_path.name}: {exc}") from exc
 
         parsed: _FrameResult = response.parsed  # type: ignore[assignment]

@@ -14,6 +14,19 @@ from src.utils.ffmpeg import VideoInfo
 
 log = structlog.get_logger(__name__)
 
+_GEMINI_QUOTA_SIGNALS = frozenset({
+    "429",
+    "resource_exhausted",
+    "quota",
+    "failed_precondition",  # 400: billing not enabled / free tier unavailable
+    "billing",
+})
+
+
+def _is_gemini_quota_error(exc: Exception) -> bool:
+    exc_str = str(exc).lower()
+    return any(signal in exc_str for signal in _GEMINI_QUOTA_SIGNALS)
+
 _GEMINI_MODEL = "gemini-2.5-flash"
 
 _MIN_DURATION = 60.0    # seconds — YouTube Shorts floor
@@ -85,9 +98,8 @@ async def select_clips(
         await session.flush()
         if isinstance(exc, GeminiSelectionError):
             raise
-        exc_str = str(exc).lower()
-        if "429" in exc_str or "quota" in exc_str or "resource_exhausted" in exc_str:
-            raise GeminiQuotaError(f"Gemini quota hit during clip selection: {exc}") from exc
+        if _is_gemini_quota_error(exc):
+            raise GeminiQuotaError(f"Gemini quota/billing issue during clip selection: {exc}") from exc
         raise GeminiSelectionError(f"Gemini clip selection failed: {exc}") from exc
 
     validated = _validate_clips(parsed, info.duration_seconds)
