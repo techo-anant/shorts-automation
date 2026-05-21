@@ -20,7 +20,8 @@ _HIGHLIGHT_QUERY = (
 )
 
 _SHORTS_MAX_DURATION = 180.0  # seconds — hard cap for YouTube Shorts
-_MIN_CLIP_DURATION = 5.0      # seconds — drop clips shorter than this
+_SHORTS_MIN_DURATION = 60.0   # seconds — floor for YouTube Shorts
+_HIGHLIGHT_MIN_DURATION = 5.0 # seconds — highlights have no Shorts length requirement
 _MIN_GAP_SECONDS = 5.0        # seconds — minimum gap between accepted clips of the same type
 
 
@@ -62,8 +63,12 @@ class MarengoMomentsImpl:
             query_type="highlight_reel",
         )
 
-        shorts_clips = _enforce_constraints(shorts_raw, max_duration=_SHORTS_MAX_DURATION)
-        highlight_clips = _enforce_constraints(highlight_raw, max_duration=None)
+        shorts_clips = _enforce_constraints(
+            shorts_raw, min_duration=_SHORTS_MIN_DURATION, max_duration=_SHORTS_MAX_DURATION
+        )
+        highlight_clips = _enforce_constraints(
+            highlight_raw, min_duration=_HIGHLIGHT_MIN_DURATION, max_duration=None
+        )
 
         log.info(
             "moments_found",
@@ -145,10 +150,12 @@ def _search(client: TwelveLabs, index_id: str, query: str) -> list[_Clip]:
     ]
 
 
-def _enforce_constraints(clips: list[_Clip], max_duration: float | None) -> list[_Clip]:
+def _enforce_constraints(
+    clips: list[_Clip], min_duration: float, max_duration: float | None
+) -> list[_Clip]:
     """
     Filter and deduplicate clips:
-    - Drop clips shorter than _MIN_CLIP_DURATION
+    - Drop clips shorter than min_duration
     - Drop clips longer than max_duration (if set)
     - Among remaining, greedily accept highest-scoring clips that don't
       overlap and maintain at least _MIN_GAP_SECONDS from already-accepted clips
@@ -160,7 +167,7 @@ def _enforce_constraints(clips: list[_Clip], max_duration: float | None) -> list
     for clip in candidates:
         duration = clip.end - clip.start
 
-        if duration < _MIN_CLIP_DURATION:
+        if duration < min_duration:
             log.info("clip_dropped_too_short", start=clip.start, end=clip.end, duration=duration)
             continue
 

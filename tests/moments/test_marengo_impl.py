@@ -1,4 +1,10 @@
-from src.moments.marengo_impl import _Clip, _conflicts_with_accepted, _enforce_constraints
+from src.moments.marengo_impl import (
+    _HIGHLIGHT_MIN_DURATION,
+    _SHORTS_MIN_DURATION,
+    _Clip,
+    _conflicts_with_accepted,
+    _enforce_constraints,
+)
 
 
 def _clip(
@@ -45,35 +51,35 @@ class TestConflictsWithAccepted:
 
 class TestEnforceConstraints:
     def test_empty_input_returns_empty(self) -> None:
-        assert _enforce_constraints([], max_duration=None) == []
+        assert _enforce_constraints([], min_duration=5.0, max_duration=None) == []
 
     def test_drops_clips_shorter_than_minimum_duration(self) -> None:
-        result = _enforce_constraints([_clip(0.0, 4.9)], max_duration=None)
+        result = _enforce_constraints([_clip(0.0, 4.9)], min_duration=5.0, max_duration=None)
         assert result == []
 
     def test_keeps_clips_at_exactly_minimum_duration(self) -> None:
         clip = _clip(0.0, 5.0)
-        result = _enforce_constraints([clip], max_duration=None)
+        result = _enforce_constraints([clip], min_duration=5.0, max_duration=None)
         assert result == [clip]
 
     def test_drops_clips_exceeding_max_duration(self) -> None:
-        result = _enforce_constraints([_clip(0.0, 200.0)], max_duration=180.0)
+        result = _enforce_constraints([_clip(0.0, 200.0)], min_duration=5.0, max_duration=180.0)
         assert result == []
 
     def test_keeps_clips_at_exactly_max_duration(self) -> None:
         clip = _clip(0.0, 180.0)
-        result = _enforce_constraints([clip], max_duration=180.0)
+        result = _enforce_constraints([clip], min_duration=5.0, max_duration=180.0)
         assert result == [clip]
 
     def test_keeps_long_clips_when_no_max_duration(self) -> None:
         clip = _clip(0.0, 300.0)
-        result = _enforce_constraints([clip], max_duration=None)
+        result = _enforce_constraints([clip], min_duration=5.0, max_duration=None)
         assert result == [clip]
 
     def test_higher_score_wins_when_clips_overlap(self) -> None:
         low = _clip(0.0, 30.0, score=0.6)
         high = _clip(20.0, 50.0, score=0.9)
-        result = _enforce_constraints([low, high], max_duration=None)
+        result = _enforce_constraints([low, high], min_duration=5.0, max_duration=None)
         # high accepted first; low conflicts with it → only high remains
         assert result == [high]
 
@@ -81,7 +87,7 @@ class TestEnforceConstraints:
         a = _clip(0.0, 20.0)
         b = _clip(30.0, 50.0)   # 10s gap from a
         c = _clip(60.0, 80.0)   # 10s gap from b
-        result = _enforce_constraints([a, b, c], max_duration=None)
+        result = _enforce_constraints([a, b, c], min_duration=5.0, max_duration=None)
         assert len(result) == 3
 
     def test_result_is_sorted_by_start_time(self) -> None:
@@ -89,7 +95,7 @@ class TestEnforceConstraints:
         a = _clip(60.0, 80.0, score=0.9)
         b = _clip(0.0, 20.0, score=0.7)
         c = _clip(30.0, 50.0, score=0.5)
-        result = _enforce_constraints([a, b, c], max_duration=None)
+        result = _enforce_constraints([a, b, c], min_duration=5.0, max_duration=None)
         starts = [cl.start for cl in result]
         assert starts == sorted(starts)
         assert starts[0] == 0.0
@@ -98,17 +104,42 @@ class TestEnforceConstraints:
         # 3s gap between clips — below the 5s minimum
         first = _clip(0.0, 20.0, score=0.9)
         second = _clip(23.0, 40.0, score=0.7)
-        result = _enforce_constraints([first, second], max_duration=None)
+        result = _enforce_constraints([first, second], min_duration=5.0, max_duration=None)
         assert len(result) == 1
         assert result[0].start == 0.0   # higher score wins
 
     def test_all_clips_dropped_when_all_too_short(self) -> None:
         clips = [_clip(float(i), float(i) + 3.0) for i in range(5)]
-        result = _enforce_constraints(clips, max_duration=None)
+        result = _enforce_constraints(clips, min_duration=5.0, max_duration=None)
         assert result == []
 
     def test_mix_of_valid_and_short_clips(self) -> None:
         valid = _clip(0.0, 30.0, score=0.9)
         short = _clip(50.0, 53.0, score=0.8)  # 3s — too short
-        result = _enforce_constraints([valid, short], max_duration=None)
+        result = _enforce_constraints([valid, short], min_duration=5.0, max_duration=None)
         assert result == [valid]
+
+
+class TestShortsMinDuration:
+    def test_shorts_floor_is_60_seconds(self) -> None:
+        assert _SHORTS_MIN_DURATION == 60.0
+
+    def test_highlight_floor_is_5_seconds(self) -> None:
+        assert _HIGHLIGHT_MIN_DURATION == 5.0
+
+    def test_shorts_drops_clip_under_60_seconds(self) -> None:
+        clip = _clip(0.0, 59.9)
+        result = _enforce_constraints([clip], min_duration=_SHORTS_MIN_DURATION, max_duration=_SHORTS_MIN_DURATION)
+        assert result == []
+
+    def test_shorts_keeps_clip_at_exactly_60_seconds(self) -> None:
+        clip = _clip(0.0, 60.0)
+        result = _enforce_constraints(
+            [clip], min_duration=_SHORTS_MIN_DURATION, max_duration=180.0
+        )
+        assert result == [clip]
+
+    def test_highlight_keeps_clip_under_60_seconds(self) -> None:
+        clip = _clip(0.0, 30.0)
+        result = _enforce_constraints([clip], min_duration=_HIGHLIGHT_MIN_DURATION, max_duration=None)
+        assert result == [clip]
