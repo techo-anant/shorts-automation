@@ -34,7 +34,7 @@ This is the most important architectural decision in v2 and worth recording prom
 
 **Pegasus 1.5 is a video-language model**, not a search engine. It accepts natural-language prompts, describes audio + visuals + on-screen action, and reasons over the full video. Combined with Gemini reading those descriptions, the pipeline gets:
 
-- **Flexible clip length** — Gemini merges consecutive 15-second windows into clips of whatever length the content warrants. 12s, 45s, 90s — all fine. No fixed minimum, no fixed maximum (besides YouTube's 180s hard cap).
+- **Flexible clip length** — Gemini merges consecutive 10-second windows into clips of whatever length the content warrants. 12s, 45s, 90s — all fine. No fixed minimum, no fixed maximum (besides YouTube's 180s hard cap).
 - **Intent-driven selection** — the category prompt can specify "a sequence with multiple kills in a round" or "a tonal shift in the conversation" or anything else. Pegasus and Gemini both reason about meaning, not pixel similarity.
 - **Auditable rationale** — every clip selection comes with a one-sentence "why this clip" from Gemini, stored in the DB and shown in the Discord approval message. The operator can sanity-check the model's reasoning, not just its picks.
 
@@ -50,9 +50,8 @@ This is the most important architectural decision in v2 and worth recording prom
 |---|---|---|---|
 | v1 | TwelveLabs **Pegasus** as primary model | **Marengo 3.0** used instead | Marengo was ~2× cheaper ($0.042/min index + $0.004/query vs Pegasus ~$0.029/min/call). Could be queried multiple times against one index. Pegasus stub kept. |
 | v1 | Single query per video | Two queries (`shorts` + `highlight_reel`) run concurrently | Enabled both YouTube Shorts output and long-form highlight timestamps from one index; negligible extra cost ($0.008 per video for both queries). |
-| v2 (mid) | Continue with Marengo for clip selection | **Reverted to Pegasus 1.5** — Marengo torn out | Marengo's clip selection failed in practice on real gameplay videos: returned hundreds of 5–8 second segments scoring on visual features the operator didn't want (e.g. the Valorant logo intro), couldn't reliably produce clips ≥30 seconds, and had no way to express *what kind* of moment to find. Pegasus 1.5 is a video-language model that accepts natural-language prompts, describes audio + visuals, and reasons over the full video. New design: **one Pegasus call describes the video in 15-second windows; Gemini 2.5 reads the descriptions plus the source video and selects/merges windows into clips per category-specific instructions.** |
-| v2 Phase 8 | Gemini receives text descriptions only | **Gemini also receives the source video** via Files API | Text descriptions alone caused Gemini to select on summaries rather than verifying visual quality. Providing the video lets Gemini confirm timestamps visually and judge excitement from actual frames. The local file is now kept alive until after Gemini select, then deleted. |
-| v2 Phase 8 | Timestamps snapped to 15-second window boundaries | **Free timestamp selection** — Gemini picks any second | 15-second grid produced clips starting/ending at arbitrary points mid-action. Gemini now sets `start_seconds`/`end_seconds` to the precise second the action begins or the round concludes. |
+| v2 (mid) | Continue with Marengo for clip selection | **Reverted to Pegasus 1.5** — Marengo torn out | Marengo's clip selection failed in practice on real gameplay videos: returned hundreds of 5–8 second segments scoring on visual features the operator didn't want (e.g. the Valorant logo intro), couldn't reliably produce clips ≥30 seconds, and had no way to express *what kind* of moment to find. Pegasus 1.5 is a video-language model that accepts natural-language prompts, describes audio + visuals, and reasons over the full video. New design: **one Pegasus call describes the video in 10-second windows; Gemini 2.5 reads the descriptions and selects/merges windows into clips per category-specific instructions.** |
+| v2 Phase 8 | Timestamps snapped to 10-second window boundaries | **Free timestamp selection** — Gemini picks any second | 10-second grid produced clips starting/ending at arbitrary points mid-action. Gemini now sets `start_seconds`/`end_seconds` to the precise second the action begins or the round concludes. |
 | v2 Phase 8 | No title generation | **Gemini generates a YouTube Shorts title per clip** | Operator requested titles following best practices: 40–70 chars, front-loaded hook, 1–2 emojis, curiosity-gap pattern, no hashtags in title. |
 | v2 Phase 10 | Discord bot buttons for approve/reject | **Emoji reactions (👍/👎)** | Bot buttons require an interaction endpoint (webhook server). Emoji reactions only need a bot token to poll — simpler, no server changes. Bot pre-adds both reactions; operator clicks one. |
 | v2 Phase 11 | `#Shorts` in video title | **Hashtags only in description** | YouTube uses `#Shorts` as a discovery chip in the description; putting it in the title wastes the character budget and looks unprofessional. |
@@ -61,7 +60,7 @@ This is the most important architectural decision in v2 and worth recording prom
 
 ## v2 — Cut, Reformat, Upload ✅ Complete
 
-End state: a long-form video dropped into Drive comes out as one or more YouTube Shorts, uploaded and live, with every step cost-tracked. Clip selection is a two-step process: Pegasus 1.5 describes the video in 15-second windows; Gemini 2.5 reads the descriptions + the source video and decides which windows to use, merging consecutive windows freely into clips of whatever length serves the content best. Clip duration is no longer fixed — Gemini decides per-clip based on what the content actually warrants and where the action naturally concludes.
+End state: a long-form video dropped into Drive comes out as one or more YouTube Shorts, uploaded and live, with every step cost-tracked. Clip selection is a two-step process: Pegasus 1.5 describes the video in 10-second windows; Gemini 2.5 reads the descriptions and decides which windows to use, merging consecutive windows freely into clips of whatever length serves the content best.
 
 **In scope:** `Short` DB model with per-short cost attribution, replacement of Marengo with the Pegasus-describe + Gemini-select pipeline, FFmpeg cutting and 9:16 reformatting, human approval gate (Discord emoji reactions), YouTube Shorts upload with quota tracking, Gemini-generated titles.
 
@@ -77,81 +76,29 @@ Tests for the four v1 modules with highest "silent wrong number" risk: `costs/`,
 
 ### Phase 7 — `Short` DB Model + Per-Short Cost Attribution ✅
 
-`Short` model tracking per-clip pipeline state (pending → cutting → cut → pending_approval → approved → uploading → uploaded, plus failed/rejected/skipped). `clip_selection_id` FK added in Phase 8 when `ClipSelection` table is created; for now, `moment_id` bridges. `gemini_rationale` and `gemini_rank` columns added in Phase 8 migration. `CostEvent.short_id` FK wired. Startup recovery resets cutting/uploading Shorts to pending.
+`Short` model tracking per-clip pipeline state (pending → cutting → cut → pending_approval → approved → uploading → uploaded, plus failed/rejected/skipped). `clip_selection_id` FK added in Phase 8 when `ClipSelection` table is created. `gemini_rationale` and `gemini_rank` columns added in Phase 8 migration. `CostEvent.short_id` FK wired. Startup recovery resets cutting/uploading Shorts to pending.
 
-### Phase 8 — Pegasus Describe + Gemini Clip Selection
+### Phase 8 — Pegasus Describe + Gemini Clip Selection ✅
 
-This is the new clip-selection brain. Marengo is torn out completely; Pegasus 1.5 plus Gemini 2.5 replace it. Two stages per video:
+Two stages per video:
 
-**Stage 1 — Pegasus describes the whole video in 15-second windows (one call).**
+**Stage 1 — Pegasus describes the whole video in 10-second windows (one call).** Results written as `SegmentDescription` rows.
 
-One Pegasus call per video with a category-configurable prompt:
+**Stage 2 — Gemini reads descriptions and selects clips.** Returns `{start_seconds, end_seconds, rationale, rank, source_segment_ids, title}`. Each selection becomes a `ClipSelection` row and a `Short` row.
 
-> *"Describe this video in 15-second windows from start to finish. For each window, return the start time, end time, and a one-to-two-sentence description of what is happening — including visuals, on-screen action, dialogue or narration audio, and any notable sound effects. Be specific. Return strictly JSON: a list of `{start_seconds, end_seconds, description}` objects."*
-
-Prompt templates live in `prompts/pegasus/<category>.txt`. Gameplay emphasizes round structure, kills, callouts, clutch moments; podcast emphasizes topic transitions and emphatic delivery; tutorial emphasizes step boundaries and demonstrations.
-
-**New DB model: `SegmentDescription`** — `(id, source_video_id FK, start_seconds, end_seconds, description TEXT, created_at)`. One row per 15-second window. A 33-minute video produces ~132 rows. Stored in full so Gemini, the editor service, and debugging have descriptions without re-calling Pegasus.
-
-CostEvent: provider=pegasus, units=video minutes (input) + text tokens (output).
-
-**Stage 2 — Gemini reads descriptions + source video and selects clips.**
-
-Gemini 2.5 receives: source video file (Files API), full `SegmentDescription` list, category-specific selection prompt, `FormatProfile`. Gemini:
-- Identifies clips that would perform well as YouTube Shorts
-- **Freely merges consecutive segments** into clips of any length (no fixed min/max besides 180s hard cap)
-- **Ranks each clip 1–10** (10 = exceptional, 1 = weakest pick)
-- Returns strict JSON: `{start_seconds, end_seconds, rationale, rank, source_segment_ids}`
-- Returns empty list + `no_clips_reason` if nothing is clip-worthy
-
-**New DB model: `ClipSelection`** — `(id, source_video_id FK, start_seconds, end_seconds, rationale TEXT, rank INTEGER, source_segment_ids JSONB, gemini_run_id FK, created_at)`. Each row becomes one `Short`.
-
-**New DB model: `GeminiRun`** — `(id, source_video_id FK, prompt_version, request_body JSONB, response_body JSONB, status, error_class nullable, error_message nullable, created_at)`. Full request/response stored for debugging and prompt tuning.
-
-**`Short` schema update (in this phase's migration):** drop `moment_id`, add `clip_selection_id FK` + `gemini_rationale TEXT` + `gemini_rank INTEGER`.
-
-**Validation before creating `ClipSelection` rows:**
-- `start_seconds < end_seconds`
-- `end_seconds <= source video duration`
-- No two clips overlap (drop lower-rank one)
-- Minimum 3 seconds (sanity guard)
-- Maximum 180 seconds (trim from end + log warning)
-- Drop clips entirely within first/last 5 seconds of source
-- `rank` integer in [1, 10]; clamp out-of-range values
-
-CostEvent for the Gemini call.
-
-**Tearing out Marengo:** `moments/marengo_impl.py`, `moments/pegasus_impl.py` (old stub), `MomentDetectionRun` Marengo references, Marengo pricing entries. `VideoIndex` stays — Pegasus uses it identically.
-
-**Done when:** one real source video produces ~132 `SegmentDescription` rows, populated `ClipSelection` rows with varied durations and ranks, one `Short` per selection in `pending` status with `gemini_rank` and `gemini_rationale` denormalized in, and cost events for both calls written with realistic numbers.
+**DB models:** `SegmentDescription`, `ClipSelection`, `GeminiRun`.
 
 ### Phase 9 — FFmpeg Cut + Reformat ✅
 
-`ffmpeg/recipes.py` — `CutRecipe` dataclass + `select_recipe(category, profile, settings)`. Three recipes:
-- **blur-bg** — gameplay zoomed/center-cropped into content zone (configurable `center_pct`, default 70%), blurred background behind it
-- **split** — facecam cropped to top `facecam_top_pct` (default 30%), gameplay center-cropped to remaining 70%; `vstack=inputs=2`; no blur
-- **passthrough** — `scale`+`pad` to 1080×1920 for already-vertical source
-
-`ffmpeg/cut.py` — `cut_short(source_path, output_path, start_seconds, end_seconds, recipe, info)`. Re-encode (not stream-copy). argv lists only, no shell strings. Output: 1080×1920 H.264/AAC, `-crf 23 -preset fast`, `-movflags +faststart`.
+Three recipes: **blur-bg** (gameplay centered, blurred bars), **split** (facecam top strip, gameplay bottom), **passthrough** (already-vertical source). Re-encode to 1080×1920 H.264/AAC.
 
 ### Phase 10 — Discord Approval Gate ✅
 
-**New DB model: `ApprovalRequest`** — `(id, source_video_id FK, short_id FK UNIQUE, discord_message_id, drive_preview_file_id, decision nullable, decided_at nullable, expires_at, created_at)`.
-
-Flow:
-1. Each cut MP4 uploads to `<drive-root>/pending-approval/<category>/` with public sharing
-2. One Discord message per clip: rank, duration, Drive preview link, rationale, react 👍/👎
-3. Bot pre-adds both reactions; operator clicks one; bot polls each tick
-4. Approved → Phase 11; rejected → Drive preview deleted, Short marked rejected
-5. 48h timeout → auto-rejected
-
-`approval/discord_approval.py` — plain aiohttp REST calls against Discord API v10 (no discord.py). `approval/gate.py` — `submit_for_approval`, `check_pending_approvals`, `_apply_decision`, `upload_approved_shorts`.
+`ApprovalRequest` model. Drive preview upload + Discord emoji reaction (👍/👎) flow. 48h timeout → auto-rejected.
 
 ### Phase 11 — YouTube Shorts Upload ✅
 
-`youtube/upload.py` — `upload_short(local_path, title, category, rationale, settings)`. `videos.insert` with resumable `MediaFileUpload`. Hashtags in description only (first 3 become YouTube chips), never in title.
-
-`youtube/quota.py` — `check_and_reserve_upload_quota(session)`. Tracks daily unit usage in `QuotaUsage` table. Raises `QuotaExhausted` at 10,000 units (6 uploads/day). Discord warning at 8,000 (80%). Overflow stays `approved` and is picked up next UTC day.
+`videos.insert` with resumable upload. Quota tracking in `QuotaUsage` table. Overflow stays `approved` and picks up next UTC day.
 
 ---
 
@@ -164,71 +111,152 @@ Flow:
 
 ---
 
-## v3 — Quality, Reach & Operational Control
+## v3 — Polish, Reliability, Bug Fixes
 
-**Goal:** Given a working end-to-end pipeline, make the output better, add new content types, and give the operator more control without touching the core pipeline.
+**No new features.** v3 is exclusively about making what already exists work properly. Three things drive the scope: (1) bugs surfaced by real-world use of v2, (2) operational visibility that's been missing, (3) edge cases the v2 pipeline doesn't handle gracefully (oversized videos, Drive preview lag).
 
-**In scope:** canary upload mode, prompt replay tooling, caption burn-in, tutorial/podcast category prompts, highlight reel pipeline from existing `SegmentDescription` rows.
+If a phase here starts feeling like "and while we're at it, let's add X" — that X belongs in v4, not v3.
 
-**Out of scope:** multi-account YouTube upload, automated thumbnail generation, A/B testing different Gemini prompts.
+### Phase 13 — Per-Step Error Classification ✅
 
-### Phase 12 — Canary Upload Mode
+Typed exception hierarchy in `src/errors/`. Each provider gets its own exception class with `step`, `provider`, and `to_discord()`. Top-of-pipeline handler in `processor.py` splits `PipelineError` (typed, step/provider context surfaced to Discord) from bare `Exception` (unexpected bugs).
 
-First Short uploaded each UTC day goes up as `unlisted`; operator gets a Discord ping with the YouTube URL. If it looks good, subsequent Shorts for that day go `public` automatically. If it looks wrong, operator can reject from Discord before anything goes public.
+Hierarchy: `PipelineError → PegasusError → {PegasusIndexError, PegasusDescribeError, PegasusQuotaError, PegasusVideoError}`, `GeminiError → {GeminiProbeError, GeminiSelectionError, GeminiQuotaError}`, `FFmpegPipelineError → {FFmpegProbeError, FFmpegCutError}`, `DriveError → {DriveAuthError, DriveDownloadError, DriveUploadError}`, `DiscordError → {DiscordPostError, DiscordReactionError}`, `YouTubeError → {YouTubeUploadError, YouTubeAuthError, YouTubeQuotaError}`.
 
-`CANARY_UNLISTED_FIRST_OF_DAY` env var (default `true`). `QuotaUsage` table already tracks daily uploads — use its `created_at` to detect first-of-day. `upload_approved_shorts` in `gate.py` checks whether any Short was uploaded today; if not, sets `privacyStatus="unlisted"` and sends the canary ping.
+### Phase 14 — Facecam Crop Bug Fix
 
-**Done when:** the first upload each UTC day is unlisted and a Discord message with the YouTube URL is sent; subsequent uploads that day are public; setting `CANARY_UNLISTED_FIRST_OF_DAY=false` makes everything public.
+The visible v2 bug: facecam videos are not being reformatted with the webcam-top, gameplay-bottom split correctly. The facecam region is being selected but not zoomed — the whole source frame is being used as the "facecam crop" because of a scale mismatch between the Gemini prompt and the consuming code.
 
-### Phase 13 — Prompt Replay Tooling
+**Root cause:** `format_probe.py` asked Gemini to return `facecam_size_pct` as "percentage of total frame area (0.0–100.0)" but `_facecam_crop_rect` in `ffmpeg/cut.py` treated the value as a fraction (0.0–1.0). Gemini returned e.g. 15.0; code computed `face_w = src_w * 15.0` → clamped to `src_w` = entire frame. So the "facecam crop" was the whole frame, and scaling it to the face slot just shrunk the entire source into that strip.
 
-Re-run Gemini clip selection against existing `SegmentDescription` rows without re-calling Pegasus (and without paying ~$1.00 again). Useful for prompt tuning after real-video feedback.
+**Fix (Phase 14, shipped):**
+1. `format_probe.py`: Changed `_FRAME_ANALYSIS_PROMPT` to ask for `facecam_size_pct` as a decimal fraction of frame WIDTH (0.0–1.0), e.g. 0.25 for a facecam spanning a quarter of the frame's width.
+2. `ffmpeg/cut.py`: Fixed `_facecam_crop_rect` to handle "center" facecam position (previously mapped to bottom-right), added sensible clamp bounds (20px minimum, half-frame maximum), and updated docstring to match the corrected input contract.
+3. `CLAUDE.md` Section 9: Lesson recorded — always make Gemini prompt unit and code docstring agree on scale (fraction vs percentage).
 
-`scripts/replay_gemini.py` — CLI: `uv run python scripts/replay_gemini.py --source-id <id> [--prompt prompts/gemini/gameplay.txt]`. Reads `SegmentDescription` rows from DB for that source, re-downloads the source video from Drive (it's still in `processed/`), calls `select_clips`, and writes new `ClipSelection` + `Short` rows tagged with a `prompt_version` suffix so they don't collide with the original run.
+**Note:** Existing `FormatProfile` rows in the DB have `facecam_size_pct` in the old 0–100 scale. Re-run format probe on any previously processed facecam videos for the fix to take effect (the probe is idempotent only if a row already exists — delete the row to force a re-probe).
 
-**Done when:** running the script against a processed source produces new `Short` rows with the updated prompt, skips the Pegasus describe call entirely, and logs the Gemini cost for the replay.
+**Done when:** a facecam video re-processed after this fix shows the streamer's face zoomed to fill the top strip; the gameplay fills the bottom strip; the fixture test catches a broken filter graph.
 
-### Phase 14 — Caption Burn-in (Optional, Per-Category)
+**Third sub-task — fixture test (pending):** Add a 5-second fixture video to `tests/fixtures/` with a clearly identifiable colored square in the corner playing the role of "facecam". The golden-file test asserts the output has the colored square scaled and on top, not in its original position.
 
-Captions drawn by Gemini per clip, burned in via FFmpeg `drawtext`. No SRT sidecar — YouTube Shorts doesn't carry them cleanly.
+**Fourth sub-task — sanity-check the recipe against `facecam_size_pct`.** The recipe should work whether the facecam is 15% or 25% or 35% of the source frame width. Test with at least two real videos with different facecam sizes.
 
-`CAPTIONS_ENABLED_GAMEPLAY=true` env var gates the feature per category.
+### Phase 15 — Oversized Video Pre-Processing
 
-Gemini generates a caption spec: `[{text, start_seconds, end_seconds, position}]` per beat. Pydantic validates: `end_seconds ≤ clip_duration`, `start_seconds < end_seconds`, position one of `top|center|bottom`. Reject invalid specs entirely — don't partially apply.
+Pegasus rejects videos over 2 GB or longer than 2 hours. Currently those rejections surface as opaque API errors. Pre-process at ingest so the operator never hits the Pegasus 2GB/2hr wall.
 
-`ffmpeg/captions.py` — builds `drawtext` filter chain. Font, size, and color are config values.
+**Detection:** during the existing FFprobe step, check `duration_seconds` and `file_size_bytes`. If either exceeds the configured limit (default: 1.9GB, 1h 55m — slightly under Pegasus's hard cap to leave margin), branch into pre-processing before indexing.
 
-New `CostEvent` step: `captions.gemini_spec`. One event per Short if captions run.
+**Pre-processing:**
+- **Oversized by file size only (under 2hr but over 2GB)** — re-encode with a lower bitrate. CRF 24 (more aggressive than the cutting/reformat default of 23 because this is the intermediate file Pegasus sees, not the final short).
+- **Oversized by duration (over 2hr)** — refuse with a typed `SourceTooLongError`. Splitting changes narrative continuity. Better to ask the operator to manually trim.
+- **Oversized by both** — same as "duration only": refuse with `SourceTooLongError`.
 
-**Done when:** a gameplay Short with captions enabled has burned-in text at the correct times; a Short without captions enabled is unchanged; an invalid spec is rejected and the Short is cut without captions (not failed).
+Pre-processed file replaces original for downstream steps only. Original in Drive untouched. Cleaned up on every code path including errors.
 
-### Phase 15 — Tutorial and Podcast Category Prompts
+**Done when:** a 3GB / 1h video successfully runs through the pipeline (pre-processed first); a 3h video is rejected cleanly with a Discord ping; an under-limit video skips pre-processing entirely.
 
-Write `prompts/pegasus/tutorial.txt`, `prompts/pegasus/podcast.txt`, `prompts/gemini/tutorial.txt`, `prompts/gemini/podcast.txt`.
+### Phase 16 — End-to-End Timing Instrumentation
 
-Tutorial selection priorities: step-by-step demonstrations, "before and after" reveals, moments where the presenter explains a non-obvious trick. Avoid: intro/outro, restatements of agenda, filler.
+Every step gets timed. Durations land in the DB so they can be trended over time, and in the Discord summary so the operator sees them per-run.
 
-Podcast selection priorities: emphatic delivery, surprising claims, topic pivots, quotable one-liners. Avoid: crosstalk, "let me find that link", sponsor reads, flat agreement.
+**New DB model: `StepTiming`** — `(id, source_video_id FK, short_id FK nullable, step_name, started_at, ended_at, duration_seconds, succeeded BOOLEAN, created_at)`. One row per pipeline step per run, including failures.
 
-Both prompts still use the same pipeline (Pegasus describe → Gemini select). Only the selection criteria change.
+**Steps to instrument:** `drive_download`, `ffprobe`, `frame_extraction`, `gemini_format_probe`, `oversized_preprocess`, `pegasus_index`, `pegasus_describe`, `gemini_clip_selection`, `ffmpeg_cut` (per-short), `ffmpeg_reformat` (per-short), `drive_upload_preview` (per-short), `discord_post_approval`, `approval_wait`, `youtube_upload` (per-short).
 
-**Done when:** a tutorial video dropped into `to-process/tutorial/` produces clips that reflect tutorial-specific criteria; a podcast video produces clips around emphatic moments; gameplay prompts are unchanged.
+**Discord summary** gains a timing block.
 
-### Phase 16 — Highlight Reel Export
+**Done when:** every step writes a `StepTiming` row on completion; Discord summary includes the timing block; `SELECT step_name, AVG(duration_seconds) FROM step_timing GROUP BY step_name` produces meaningful averages.
 
-`SegmentDescription` rows are already in the DB for every processed video. Use them to produce a timestamped highlight-reel JSON that a video editor (or future editor service) can consume — without re-calling Pegasus.
+### Phase 17 — Sync Pipeline Completion Before Discord Approval
 
-`scripts/export_highlight_reel.py` — CLI: `uv run python scripts/export_highlight_reel.py --source-id <id>`. Reads `SegmentDescription` rows, calls Gemini with a "highlight reel editor" prompt that returns `[{start_seconds, end_seconds, label, notes}]` ordered by narrative flow rather than excitement. Writes to `<source-name>_highlight_reel.json` locally and optionally uploads to Drive.
+Currently clips are announced to Discord individually as they're cut. Two problems: Drive previews aren't transcoded yet, and the operator gets dripped clips one at a time.
 
-This is a read-only export — no new Short rows, no YouTube upload, no approval gate. Pure data product for the operator.
+**Change A** — Wait for all clips to finish cutting+reformatting before any Discord posting.
 
-**Done when:** running the script against a processed source produces a JSON file with timestamped segments and labels; the Pegasus describe cost is not re-incurred; the JSON is human-readable and editable.
+**Change B** — After uploading each clip to Drive, poll `files.get` for `videoMediaMetadata` (available only after transcoding finishes). Poll every 10 seconds, 5-minute hard timeout. Timeout → post with "⏳ Preview may still be processing" note rather than blocking.
+
+**Change C** — `videoMediaMetadata` polling is its own `StepTiming` step.
+
+**Done when:** zero Discord messages until all clips are cut+reformatted+Drive-transcoded; clicking the Drive preview link immediately renders the video; timed-out clips get the warning note.
+
+### Phase 18 — Summary-First Discord Layout in Per-Video Threads
+
+**Change A** — Each source video gets its own Discord thread.
+
+**Change B** — First message in thread is a summary placeholder ("Processing…"), edited in place once clips are ready with real numbers (facecam, format, clip count, cost so far). Clip messages appear below, sorted by `gemini_rank` desc. Summary edited again at completion with final upload count.
+
+**Done when:** each source gets its own thread; summary message goes through "processing" → "ready for approval" → "complete" lifecycle; clip messages appear below sorted by rank.
+
+### Phase 19 — Bug Sweep + v2 Backlog
+
+A catch-all phase for small bugs and inconsistencies surfaced while running v2 in production. Every bug fixed here gets a regression test, and every fix has a one-line entry in `CLAUDE.md` Section 9.
+
+**Done when:** no outstanding bug reports from the operator after a week of v2 operation; every fix has a test; `CLAUDE.md` Section 9 has new lessons.
+
+---
+
+## Out of scope for v3
+
+- Captions / text overlays
+- Cyclic / sliding-window clip selection
+- New category prompts (tutorial/podcast)
+- Prompt replay tooling
+- Multi-channel
+- Web UI
+- Highlight reel export
+- Canary unlisted-first-of-day
 
 ---
 
 ## v3 Risks
 
-- **Canary mode relies on `QuotaUsage.created_at` for first-of-day detection.** If the DB is cleared or quota rows are missing, every upload would be treated as the first of the day. Guard with an explicit `uploaded_today` count query instead.
-- **Prompt replay produces duplicate Shorts.** Tag replayed rows clearly with prompt version; add a `--dry-run` flag that prints what would be created without writing to DB.
-- **Caption spec validation.** An LLM-generated spec with `end_seconds > clip_duration` would produce malformed FFmpeg filters. Pydantic boundary check at parse time, not at render time.
-- **Tutorial/podcast describe prompts need real-video testing.** Don't ship prompts that were only designed at a desk — test against actual tutorial/podcast source videos before treating the output as reliable.
+- **Diagnostic-before-fix discipline on the facecam bug.** Check the DB row for `has_facecam` before editing FFmpeg code. The Phase 14 fix addresses the confirmed diagnosis (split recipe running but crop rect wrong). If a video shows the blur-bg recipe instead, the probe is the bug, not the filter graph.
+- **The `StepTiming` table grows unboundedly.** Each source produces 10–15 rows. Worth a retention policy (drop rows older than 90 days?) but not urgent enough to gate v3 on.
+- **Drive `videoMediaMetadata` polling adds latency to every clip.** If most clips transcode in 5 seconds and the timeout is 5 minutes, the average case is fine but the worst case is 5 minutes per clip. Measure with Phase 16, tune the timeout down if real numbers support it.
+- **Thread permissions on Discord.** Adding bot permissions in prod can fail silently if the bot is already in the channel under restricted scope. Test in a dev channel first.
+- **Pre-processing CRF 24 might be too aggressive for Pegasus.** If Pegasus's describe quality drops on pre-processed videos, raise the CRF to 22. Test by comparing descriptions from original vs. pre-processed.
+- **Phase 17 is a behavior change.** Waiting for all clips before any Discord post means the operator doesn't know anything is happening for several minutes. The placeholder summary in Phase 18 mitigates this — don't ship 17 without 18.
+
+---
+
+## v4 — Quality, Reach & Operational Control (deferred)
+
+> Paused until v3 ships and runs in prod.
+
+**Goal:** Given a working end-to-end pipeline, make the output better, add new content types, and give the operator more control without touching the core pipeline.
+
+**In scope:** canary upload mode, prompt replay tooling, caption burn-in, tutorial/podcast category prompts, highlight reel pipeline from existing `SegmentDescription` rows, cyclic/sliding-window clip selection.
+
+**Out of scope:** multi-account YouTube upload, automated thumbnail generation, A/B testing different Gemini prompts.
+
+### Phase A — Canary Upload Mode
+
+First Short uploaded each UTC day goes up as `unlisted`; operator gets a Discord ping with the YouTube URL. Subsequent Shorts that day go `public` automatically.
+
+`CANARY_UNLISTED_FIRST_OF_DAY` env var (default `true`).
+
+### Phase B — Prompt Replay Tooling
+
+Re-run Gemini clip selection against existing `SegmentDescription` rows without re-calling Pegasus.
+
+`scripts/replay_gemini.py` — reads `SegmentDescription` rows from DB, re-downloads source video from Drive (still in `processed/`), calls `select_clips`, writes new `ClipSelection` + `Short` rows tagged with a `prompt_version` suffix.
+
+### Phase C — Caption Burn-in (Optional, Per-Category)
+
+Captions drawn by Gemini per clip, burned in via FFmpeg `drawtext`. No SRT sidecar.
+
+`CAPTIONS_ENABLED_GAMEPLAY=true` env var gates per category. Gemini generates `[{text, start_seconds, end_seconds, position}]`. Pydantic validates. `ffmpeg/captions.py` builds `drawtext` filter chain. New `CostEvent` step: `captions.gemini_spec`.
+
+### Phase D — Tutorial and Podcast Category Prompts
+
+Write `prompts/pegasus/tutorial.txt`, `prompts/pegasus/podcast.txt`, `prompts/gemini/tutorial.txt`, `prompts/gemini/podcast.txt`. Only the selection criteria change; same pipeline.
+
+### Phase E — Highlight Reel Export
+
+`scripts/export_highlight_reel.py` — reads `SegmentDescription` rows, calls Gemini with a highlight-reel editor prompt, writes `[{start_seconds, end_seconds, label, notes}]` JSON locally and optionally to Drive. Read-only export, no new Short rows, no upload.
+
+### Phase F — Cyclic / Sliding-Window Clip Selection
+
+Overlap the Pegasus describe windows by a few seconds to avoid missing action that straddles a boundary. Update Gemini's clip-selection prompt to deduplicate near-identical windows when merging.

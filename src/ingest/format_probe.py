@@ -58,8 +58,9 @@ When in doubt, return has_facecam=false.
 Also return:
 - facecam_position: where the overlay sits ("top-left", "top-right", "bottom-left", "bottom-right",
   "center", or null if no facecam)
-- facecam_size_pct: approximate percentage of the total frame area occupied by the facecam overlay
-  (0.0–100.0, or null if no facecam)
+- facecam_size_pct: approximate fraction of the frame WIDTH spanned by the facecam overlay,
+  as a decimal between 0.0 and 1.0 (e.g. 0.25 if the facecam spans roughly a quarter of the
+  frame's width). Do NOT return a percentage — return a decimal fraction. Return null if no facecam.
 - is_already_vertical: true if the video is already in portrait/vertical orientation (taller than wide)
 """
 

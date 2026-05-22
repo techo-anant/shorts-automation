@@ -228,23 +228,31 @@ def _facecam_crop_rect(
     """
     Estimate (crop_w, crop_h, crop_x, crop_y) for the facecam region.
 
-    size_pct is treated as the fraction of frame WIDTH the facecam overlay spans.
-    The height is inferred assuming a roughly 16:9 facecam aspect ratio.
-    Position is one of: top-left, top-right, bottom-left, bottom-right.
+    size_pct is the fraction of frame WIDTH the facecam spans (0.0–1.0 decimal).
+    Height is inferred assuming a roughly 16:9 facecam aspect ratio.
+    Position is one of: top-left, top-right, bottom-left, bottom-right, center.
     """
     face_w = round(src_w * size_pct)
     face_h = round(face_w * 9 / 16)
 
-    # Clamp to frame bounds
-    face_w = min(face_w, src_w)
-    face_h = min(face_h, src_h)
+    # Clamp to sensible bounds (at least 20px, at most half the frame)
+    face_w = max(20, min(face_w, src_w // 2))
+    face_h = max(12, min(face_h, src_h // 2))
 
     pos = position.lower().replace("_", "-")
 
-    x = 0 if "left" in pos else src_w - face_w
-    y = 0 if "top" in pos else src_h - face_h
+    if "left" not in pos and "right" not in pos:
+        # "center" or anything unrecognised — place in the horizontal centre
+        x = (src_w - face_w) // 2
+    else:
+        x = 0 if "left" in pos else src_w - face_w
 
-    # Ensure even dimensions
+    if "top" not in pos and "bottom" not in pos:
+        y = (src_h - face_h) // 2
+    else:
+        y = 0 if "top" in pos else src_h - face_h
+
+    # Ensure even dimensions (FFmpeg yuv420p requirement)
     if face_w % 2 != 0:
         face_w -= 1
     if face_h % 2 != 0:

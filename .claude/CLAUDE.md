@@ -242,3 +242,6 @@ Every priced operation writes one `CostEvent` row immediately after the operatio
 
 - **2026-05** — Debian drops old ffmpeg patch versions when a security update ships; `apt-get install ffmpeg=<old-pin>` fails with exit 100.
   **Rule:** When the pinned ffmpeg version causes a build failure, bump the pin to the current bookworm version (`apt-cache policy ffmpeg` inside a fresh container) — do NOT remove the pin. Removing it trades reproducibility for a green build and the same failure recurs silently on the next security update.
+
+- **2026-05** — Gemini `facecam_size_pct` prompt said "percentage 0.0–100.0" but `_facecam_crop_rect` in `ffmpeg/cut.py` treated the value as a fraction (0.0–1.0). Gemini returned 15.0; code computed `face_w = src_w * 15.0` → clamped to full frame width. The crop covered the entire source frame, so the "zoom" just shrunk the whole frame into the facecam slot.
+  **Rule:** When Gemini returns a numeric field via a structured schema, make the prompt and the consuming code agree on the exact unit and scale (fraction vs. percentage). Always write the scale expectation in both places — the prompt description AND the code docstring.
