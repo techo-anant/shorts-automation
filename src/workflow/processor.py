@@ -9,13 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.approval.gate import submit_for_approval
 from src.config import Settings
 from src.costs.record import get_cost_breakdown, get_source_total_cost
-from src.db.models import FormatProfile, Short, SourceVideo, VideoIndex
+from src.db.models import CropRequest, FormatProfile, Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
 from src.errors import FFmpegProbeError, PipelineError
 from src.ffmpeg.cut import cut_short
 from src.ffmpeg.recipes import select_recipe
 from src.indexer.pegasus import get_or_upload_asset
+from src.ingest.crop_request import request_manual_crop
 from src.ingest.format_probe import FormatProbeResult, run_format_probe
 from src.moments.pipeline import run_clip_selection
 from src.notifications.discord import send_error, send_message
@@ -143,6 +144,13 @@ async def _cut_all_shorts(
                 )
             )
         ).scalar_one_or_none()
+        crop_request: CropRequest | None = (
+            await session.execute(
+                select(CropRequest).where(
+                    CropRequest.source_video_id == source_video.id
+                )
+            )
+        ).scalar_one_or_none()
 
     if profile is None:
         log.warning(
@@ -152,7 +160,7 @@ async def _cut_all_shorts(
         local_path.unlink(missing_ok=True)
         return
 
-    recipe = select_recipe(source_video.category, profile, settings)
+    recipe = select_recipe(source_video.category, profile, settings, crop_request)
     try:
         info = await probe_video(local_path)
     except FFmpegError as exc:
@@ -254,6 +262,32 @@ async def process_source_video(
                     settings=settings,
                 )
                 await session.commit()
+
+            # --- Manual crop request (facecam videos only) ---
+            if format_result.has_facecam and not format_result.facecam_unstable:
+                async with get_session_factory()() as session:
+                    existing_crop_req: CropRequest | None = (
+                        await session.execute(
+                            select(CropRequest).where(
+                                CropRequest.source_video_id == source_video.id
+                            )
+                        )
+                    ).scalar_one_or_none()
+
+                if existing_crop_req is None:
+                    async with get_session_factory()() as session:
+                        await request_manual_crop(
+                            session=session,
+                            source_video=source_video,
+                            video_path=local_path,
+                            info=info,
+                            drive_client=drive_client,
+                            settings=settings,
+                        )
+                        await session.commit()
+                    await _mark_status(source_video.id, "waiting_for_crop")
+                    log.info("source_video_waiting_for_crop", source_id=source_video.id)
+                    return
 
             # --- Pegasus upload (deletes local file after upload confirmed) ---
             async with get_session_factory()() as session:

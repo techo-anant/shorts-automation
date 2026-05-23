@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Facecam Crop Tool</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; background: #1a1a1a; color: #ddd; padding: 20px; }
+  h1 { font-size: 1.1rem; margin-bottom: 16px; color: #fff; }
+  .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  input[type=text] {
+    background: #2a2a2a; color: #ddd; border: 1px solid #444;
+    padding: 6px 10px; font-family: monospace; font-size: 0.85rem; width: 420px;
+  }
+  button {
+    background: #333; color: #ddd; border: 1px solid #555;
+    padding: 6px 14px; font-family: monospace; cursor: pointer; font-size: 0.85rem;
+  }
+  button:hover { background: #444; }
+  button.primary { background: #1a5c2a; border-color: #2a8a3e; color: #9ef0a8; }
+  button.primary:hover { background: #236b31; }
+  label { font-size: 0.85rem; color: #aaa; }
+  #canvas-wrap {
+    position: relative; display: inline-block; cursor: crosshair;
+    border: 1px solid #444; max-width: 100%; overflow: auto;
+  }
+  canvas { display: block; }
+  #json-out {
+    margin-top: 16px; background: #111; border: 1px solid #333;
+    padding: 12px; font-size: 0.9rem; color: #9ef0a8;
+    min-height: 40px; word-break: break-all;
+  }
+  #hint { font-size: 0.8rem; color: #666; margin-top: 8px; }
+  #coords-display { font-size: 0.85rem; color: #888; margin-top: 8px; }
+  #status { font-size: 0.8rem; color: #888; }
+</style>
+</head>
+<body>
+<h1>Facecam Crop Tool</h1>
+
+<div class="controls">
+  <label>Image URL or Drive share link:</label>
+  <input type="text" id="url-input" placeholder="https://drive.google.com/file/d/.../view">
+  <button onclick="loadUrl()">Load</button>
+  <label style="margin-left:8px;">— or —</label>
+  <input type="file" id="file-input" accept="image/*" onchange="loadFile(this)" style="color:#aaa;font-size:0.8rem">
+</div>
+
+<span id="status"></span>
+
+<div id="canvas-wrap" style="display:none">
+  <canvas id="canvas"></canvas>
+</div>
+
+<div id="coords-display"></div>
+
+<div id="json-out">Draw a rectangle on the image to get the crop JSON.</div>
+<div id="hint">
+  Drag to select the facecam area. Copy the JSON below and reply to the Discord message with it.
+</div>
+<br>
+<button class="primary" onclick="copyJson()" id="copy-btn" style="display:none">Copy JSON</button>
+<button onclick="clearSelection()" style="margin-left:8px;display:none" id="clear-btn">Clear</button>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('canvas-wrap');
+const jsonOut = document.getElementById('json-out');
+const coordsDisplay = document.getElementById('coords-display');
+const statusEl = document.getElementById('status');
+
+let img = new Image();
+let scale = 1;
+let dragging = false;
+let startX = 0, startY = 0, endX = 0, endY = 0;
+let hasSel = false;
+
+function loadUrl() {
+  let url = document.getElementById('url-input').value.trim();
+  // Convert Drive view URL to direct download/thumbnail
+  const m = url.match(/\/file\/d\/([^/]+)/);
+  if (m) {
+    url = `https://drive.google.com/thumbnail?id=${m[1]}&sz=w1920`;
+  }
+  statusEl.textContent = 'Loading…';
+  img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { setupCanvas(); statusEl.textContent = ''; };
+  img.onerror = () => {
+    statusEl.textContent = 'Failed to load (CORS). Use File input instead.';
+  };
+  img.src = url;
+}
+
+function loadFile(input) {
+  if (!input.files[0]) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    img = new Image();
+    img.onload = () => { setupCanvas(); statusEl.textContent = ''; };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(input.files[0]);
+}
+
+function setupCanvas() {
+  const maxW = Math.min(window.innerWidth - 48, img.naturalWidth);
+  scale = maxW / img.naturalWidth;
+  canvas.width = Math.round(img.naturalWidth * scale);
+  canvas.height = Math.round(img.naturalHeight * scale);
+  wrap.style.display = 'inline-block';
+  hasSel = false;
+  draw();
+  jsonOut.textContent = 'Draw a rectangle on the image to get the crop JSON.';
+  coordsDisplay.textContent = `Image: ${img.naturalWidth} × ${img.naturalHeight}px  |  scale: ${scale.toFixed(3)}`;
+  document.getElementById('copy-btn').style.display = 'none';
+  document.getElementById('clear-btn').style.display = 'none';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  if (hasSel || dragging) {
+    const x = Math.min(startX, endX);
+    const y = Math.min(startY, endY);
+    const w = Math.abs(endX - startX);
+    const h = Math.abs(endY - startY);
+    ctx.strokeStyle = '#00ff88';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.strokeRect(x, y, w, h);
+    ctx.fillStyle = 'rgba(0,255,136,0.08)';
+    ctx.fillRect(x, y, w, h);
+    // Corner labels
+    const rx = Math.round(x / scale), ry = Math.round(y / scale);
+    const rw = Math.round(w / scale), rh = Math.round(h / scale);
+    ctx.fillStyle = '#00ff88';
+    ctx.font = '12px monospace';
+    ctx.fillText(`${rx},${ry}`, x + 4, y + 16);
+    ctx.fillText(`${rw}×${rh}`, x + w / 2 - 20, y + h / 2);
+  }
+}
+
+function canvasCoords(e) {
+  const r = canvas.getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+
+canvas.addEventListener('mousedown', e => {
+  [startX, startY] = canvasCoords(e);
+  endX = startX; endY = startY;
+  dragging = true;
+  hasSel = false;
+});
+canvas.addEventListener('mousemove', e => {
+  if (!dragging) return;
+  [endX, endY] = canvasCoords(e);
+  draw();
+});
+canvas.addEventListener('mouseup', e => {
+  [endX, endY] = canvasCoords(e);
+  dragging = false;
+  hasSel = true;
+  updateJson();
+  draw();
+});
+
+function updateJson() {
+  const x = Math.round(Math.min(startX, endX) / scale);
+  const y = Math.round(Math.min(startY, endY) / scale);
+  const w = Math.round(Math.abs(endX - startX) / scale);
+  const h = Math.round(Math.abs(endY - startY) / scale);
+  if (w < 4 || h < 4) { hasSel = false; return; }
+  const json = JSON.stringify({x, y, w, h});
+  jsonOut.textContent = json;
+  coordsDisplay.textContent = `Image: ${img.naturalWidth} × ${img.naturalHeight}px  |  crop: x=${x} y=${y} w=${w} h=${h}`;
+  document.getElementById('copy-btn').style.display = '';
+  document.getElementById('clear-btn').style.display = '';
+}
+
+function copyJson() {
+  navigator.clipboard.writeText(jsonOut.textContent).then(() => {
+    const btn = document.getElementById('copy-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = orig, 1500);
+  });
+}
+
+function clearSelection() {
+  hasSel = false;
+  draw();
+  jsonOut.textContent = 'Draw a rectangle on the image to get the crop JSON.';
+  document.getElementById('copy-btn').style.display = 'none';
+  document.getElementById('clear-btn').style.display = 'none';
+}
+</script>
+</body>
+</html>

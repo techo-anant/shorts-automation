@@ -14,6 +14,7 @@ from src.db.models import Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
 from src.health.server import start_health_server
+from src.ingest.crop_request import check_crop_requests
 from src.notifications.discord import send_message
 from src.workflow.processor import process_source_video
 
@@ -118,6 +119,7 @@ async def reset_stuck_processing_rows() -> None:
 
 async def poll_once(drive_client: DriveClient, settings: Settings) -> None:
     await sweep_expired_indexes(settings)
+    await check_crop_requests(settings)
     await check_pending_approvals(settings)
     await upload_approved_shorts(drive_client, settings)
 

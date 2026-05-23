@@ -129,11 +129,29 @@ async def _cut_split(
     if game_h % 2 != 0:
         game_h -= 1
 
-    # Estimate facecam crop rect from source frame
     src_w, src_h = info.width, info.height
-    face_crop_w, face_crop_h, face_crop_x, face_crop_y = _facecam_crop_rect(
-        recipe.facecam_position, recipe.facecam_size_pct, src_w, src_h
-    )
+
+    if recipe.manual_crop_w is not None:
+        # Operator-supplied crop — scale from reference resolution to actual source
+        ref_w = recipe.manual_crop_ref_w if recipe.manual_crop_ref_w is not None else src_w
+        ref_h = recipe.manual_crop_ref_h if recipe.manual_crop_ref_h is not None else src_h
+        man_x = recipe.manual_crop_x if recipe.manual_crop_x is not None else 0
+        man_y = recipe.manual_crop_y if recipe.manual_crop_y is not None else 0
+        man_h = recipe.manual_crop_h if recipe.manual_crop_h is not None else recipe.manual_crop_w
+        scale_x = src_w / ref_w
+        scale_y = src_h / ref_h
+        face_crop_x = round(man_x * scale_x)
+        face_crop_y = round(man_y * scale_y)
+        face_crop_w = round(recipe.manual_crop_w * scale_x)
+        face_crop_h = round(man_h * scale_y)
+        if face_crop_w % 2:
+            face_crop_w -= 1
+        if face_crop_h % 2:
+            face_crop_h -= 1
+    else:
+        face_crop_w, face_crop_h, face_crop_x, face_crop_y = _facecam_crop_rect(
+            recipe.facecam_position, recipe.facecam_size_pct, src_w, src_h
+        )
 
     # Facecam: crop the facecam region, scale to fill 1080×face_h
     face_filter = (

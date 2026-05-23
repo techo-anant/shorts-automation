@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     DISCORD_APPROVAL_CHANNEL_ID: str
     # Hours before an unreviewed approval times out and auto-rejects
     APPROVAL_TIMEOUT_HOURS: int = 48
+    # Hours before an unanswered facecam crop request falls back to auto-detection
+    CROP_TIMEOUT_HOURS: int = 24
 
     # Polling
     POLL_INTERVAL_SECONDS: int = 60

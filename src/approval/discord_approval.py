@@ -95,6 +95,29 @@ async def get_decision(
     return None
 
 
+async def get_message_replies(
+    channel_id: str, message_id: str, bot_token: str
+) -> list[str]:
+    """
+    Return the text content of all messages that explicitly reply to message_id.
+    Fetches up to 50 messages posted after it and filters by message_reference.
+    """
+    url = f"{_API}/channels/{channel_id}/messages"
+    params = {"after": message_id, "limit": "50"}
+    async with aiohttp.ClientSession() as session, session.get(
+        url, params=params, headers=_headers(bot_token)
+    ) as resp:
+        if resp.status == 404:
+            return []
+        resp.raise_for_status()
+        messages = await resp.json()
+    return [
+        m["content"]
+        for m in messages
+        if (m.get("message_reference") or {}).get("message_id") == message_id
+    ]
+
+
 async def update_message(
     channel_id: str, message_id: str, bot_token: str, content: str
 ) -> None:

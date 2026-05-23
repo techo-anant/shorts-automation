@@ -31,7 +31,7 @@ class SourceVideo(Base):
     drive_file_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(500), nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False)
-    # pending | processing | completed | completed_no_output | failed
+    # pending | processing | waiting_for_crop | completed | completed_no_output | failed
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     local_path: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -57,6 +57,9 @@ class SourceVideo(Base):
     clip_selections: Mapped[list["ClipSelection"]] = relationship(back_populates="source_video")
     shorts: Mapped[list["Short"]] = relationship(back_populates="source_video")
     approval_requests: Mapped[list["ApprovalRequest"]] = relationship(back_populates="source_video")
+    crop_request: Mapped[Optional["CropRequest"]] = relationship(
+        back_populates="source_video", uselist=False
+    )
     cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="source_video")
 
 
@@ -288,6 +291,36 @@ class ApprovalRequest(Base):
 
     source_video: Mapped["SourceVideo"] = relationship(back_populates="approval_requests")
     short: Mapped["Short"] = relationship(back_populates="approval_request")
+
+
+class CropRequest(Base):
+    """Per-source-video operator crop input — created when facecam is detected."""
+
+    __tablename__ = "crop_requests"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False, unique=True
+    )
+    discord_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Drive file ID of the reference JPEG frame
+    drive_frame_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # pending | provided | timed_out
+    status: Mapped[str] = mapped_column(String(50), nullable=False, server_default="pending")
+    # Crop rectangle in pixels on the reference frame (null until operator replies)
+    crop_x: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crop_y: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crop_w: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crop_h: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Resolution of the frame the operator measured on (for proportional scaling)
+    ref_width: Mapped[int] = mapped_column(Integer, nullable=False)
+    ref_height: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="crop_request")
 
 
 class CostEvent(Base):
