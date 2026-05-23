@@ -6,7 +6,8 @@ import structlog
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.approval.gate import submit_for_approval
+from src.approval.discord_approval import create_thread_from_message, post_message, update_message
+from src.approval.gate import post_approval_to_discord, upload_preview_to_drive
 from src.config import Settings
 from src.costs.record import get_cost_breakdown, get_source_total_cost
 from src.db.models import CropRequest, FormatProfile, Short, SourceVideo, VideoIndex
@@ -123,11 +124,13 @@ async def _cut_all_shorts(
     drive_client: DriveClient,
     tmpdir: str,
     settings: Settings,
+    thread_id: str | None = None,
 ) -> None:
     """
-    Re-download the source video from Drive and cut every Short in the list.
-    Updates each Short's status and local_path in DB.
-    Source file is deleted after all cuts complete.
+    Three-phase per-source cut pipeline:
+      1. Cut every Short with FFmpeg (all clips before any Drive upload).
+      2. Upload each cut to Drive + wait for transcoding readiness.
+      3. Post Discord approval messages, sorted by rank descending.
     """
     if not shorts:
         return
@@ -156,10 +159,7 @@ async def _cut_all_shorts(
         ).scalar_one_or_none()
 
     if profile is None:
-        log.warning(
-            "cut_skipped_no_profile",
-            source_id=source_video.id,
-        )
+        log.warning("cut_skipped_no_profile", source_id=source_video.id)
         local_path.unlink(missing_ok=True)
         return
 
@@ -175,6 +175,8 @@ async def _cut_all_shorts(
         count=len(shorts),
     )
 
+    # --- Phase 1: Cut all clips ---
+    cut_results: list[tuple[Short, Path]] = []
     for short in shorts:
         output_path = Path(tmpdir) / f"short_{short.id}.mp4"
         try:
@@ -188,25 +190,15 @@ async def _cut_all_shorts(
                     info=info,
                 )
             short.format_recipe = recipe.name
-            log.info("short_cut_complete", short_id=short.id, output=str(output_path))
-
-            # Submit for approval: upload to Drive, post Discord message
             async with get_session_factory()() as session:
                 await session.execute(
                     update(Short)
                     .where(Short.id == short.id)
                     .values(status="cut", format_recipe=recipe.name)
                 )
-                await submit_for_approval(
-                    short=short,
-                    source_video=source_video,
-                    local_path=output_path,
-                    drive_client=drive_client,
-                    session=session,
-                    settings=settings,
-                )
                 await session.commit()
-
+            log.info("short_cut_complete", short_id=short.id)
+            cut_results.append((short, output_path))
         except Exception:
             log.exception("short_cut_failed", short_id=short.id)
             async with get_session_factory()() as session:
@@ -216,6 +208,63 @@ async def _cut_all_shorts(
                 await session.commit()
 
     local_path.unlink(missing_ok=True)
+
+    # --- Phase 2: Upload each cut to Drive + wait for transcoding ---
+    upload_results: list[tuple[Short, str, str, bool]] = []
+    for short, output_path in cut_results:
+        try:
+            async with record_step_timing(
+                source_video.id, "drive_upload_preview", short_id=short.id
+            ):
+                drive_file_id, preview_url = await upload_preview_to_drive(
+                    short=short,
+                    source_video=source_video,
+                    local_path=output_path,
+                    drive_client=drive_client,
+                    settings=settings,
+                )
+
+            async with record_step_timing(
+                source_video.id, "drive_preview_ready", short_id=short.id
+            ):
+                transcoding_ready = await drive_client.wait_for_transcoding(drive_file_id)
+
+            upload_results.append((short, drive_file_id, preview_url, transcoding_ready))
+        except Exception:
+            log.exception("short_drive_upload_failed", short_id=short.id)
+            async with get_session_factory()() as session:
+                await session.execute(
+                    update(Short).where(Short.id == short.id).values(status="failed")
+                )
+                await session.commit()
+
+    # --- Phase 3: Post Discord approval messages, ranked descending ---
+    ranked = sorted(
+        upload_results,
+        key=lambda t: t[0].gemini_rank or 0,
+        reverse=True,
+    )
+    for short, drive_file_id, preview_url, transcoding_ready in ranked:
+        try:
+            async with (
+                record_step_timing(
+                    source_video.id, "discord_post_approval", short_id=short.id
+                ),
+                get_session_factory()() as session,
+            ):
+                await post_approval_to_discord(
+                    short=short,
+                    source_video=source_video,
+                    drive_file_id=drive_file_id,
+                    preview_url=preview_url,
+                    session=session,
+                    settings=settings,
+                    thread_id=thread_id,
+                    transcoding_ready=transcoding_ready,
+                )
+                await session.commit()
+        except Exception:
+            log.exception("short_approval_post_failed", short_id=short.id)
 
 
 async def process_source_video(
@@ -232,6 +281,8 @@ async def process_source_video(
 
     format_result: FormatProbeResult | None = None
     shorts: list[Short] = []
+    thread_id: str | None = None
+    summary_message_id: str | None = None
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -321,7 +372,39 @@ async def process_source_video(
                 )
                 await session.commit()
 
-        # --- FFmpeg cut + reformat → approval gate ---
+        # --- Create Discord thread before cutting (only when clips were found) ---
+        if shorts:
+            try:
+                summary_message_id = await post_message_for_thread(
+                    source_video, len(shorts), settings
+                )
+                thread_id = await create_thread_from_message(
+                    settings.DISCORD_APPROVAL_CHANNEL_ID,
+                    summary_message_id,
+                    source_video.name,
+                    settings.DISCORD_BOT_TOKEN,
+                )
+                async with get_session_factory()() as session:
+                    await session.execute(
+                        update(SourceVideo)
+                        .where(SourceVideo.id == source_video.id)
+                        .values(
+                            discord_thread_id=thread_id,
+                            discord_summary_message_id=summary_message_id,
+                        )
+                    )
+                    await session.commit()
+                log.info(
+                    "discord_thread_created",
+                    source_id=source_video.id,
+                    thread_id=thread_id,
+                )
+            except Exception:
+                log.warning("discord_thread_create_failed", source_id=source_video.id)
+                thread_id = None
+                summary_message_id = None
+
+        # --- FFmpeg cut + Drive upload + Discord approval posts ---
         if shorts:
             with tempfile.TemporaryDirectory() as cut_tmpdir:
                 await _cut_all_shorts(
@@ -330,6 +413,7 @@ async def process_source_video(
                     drive_client=drive_client,
                     tmpdir=cut_tmpdir,
                     settings=settings,
+                    thread_id=thread_id,
                 )
 
         # --- Move source file in Drive ---
@@ -359,7 +443,7 @@ async def process_source_video(
             shorts_count=len(shorts),
         )
 
-        # --- Discord summary ---
+        # --- Discord summary (edit placeholder if thread was created, else post fresh) ---
         async with get_session_factory()() as session:
             total_cost = await get_source_total_cost(session, source_video.id)
             breakdown = await get_cost_breakdown(session, source_video.id)
@@ -370,7 +454,21 @@ async def process_source_video(
                 source_video, format_result, shorts, total_cost, breakdown,
                 format_timing_summary(timings),
             )
-            await send_message(settings.DISCORD_WEBHOOK_URL, summary)
+            if summary_message_id is not None:
+                try:
+                    await update_message(
+                        settings.DISCORD_APPROVAL_CHANNEL_ID,
+                        summary_message_id,
+                        settings.DISCORD_BOT_TOKEN,
+                        summary,
+                    )
+                except Exception:
+                    log.warning(
+                        "discord_summary_edit_failed", source_id=source_video.id
+                    )
+                    await send_message(settings.DISCORD_WEBHOOK_URL, summary)
+            else:
+                await send_message(settings.DISCORD_WEBHOOK_URL, summary)
 
     except CostBudgetExceeded as exc:
         log.error(
@@ -414,3 +512,21 @@ async def process_source_video(
             description=f"{type(exc).__name__}: {exc}",
         )
         await _move_to_failed(source_video, drive_client, settings)
+
+
+async def post_message_for_thread(
+    source_video: SourceVideo, clip_count: int, settings: Settings
+) -> str:
+    """
+    Post the "Processing…" placeholder to the approval channel.
+    Returns the message ID (used to create the thread and later edited to the summary).
+    """
+    content = (
+        f"⚙️ **Processing: {source_video.name}** [{source_video.category}]"
+        f" — {clip_count} clip(s) found, cutting…"
+    )
+    return await post_message(
+        settings.DISCORD_APPROVAL_CHANNEL_ID,
+        settings.DISCORD_BOT_TOKEN,
+        content,
+    )

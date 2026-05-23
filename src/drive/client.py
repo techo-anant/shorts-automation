@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import structlog
@@ -203,6 +204,37 @@ class DriveClient:
 
         await asyncio.to_thread(_run)
         log.info("drive_file_moved", file_id=file_id, to=new_parent_id)
+
+    async def wait_for_transcoding(
+        self,
+        file_id: str,
+        poll_interval_seconds: int = 10,
+        timeout_seconds: int = 300,
+    ) -> bool:
+        """
+        Poll until Drive reports video transcoding is done (videoMediaMetadata present).
+        Returns True when ready, False if the timeout expires first.
+        """
+        deadline = datetime.now(tz=UTC) + timedelta(seconds=timeout_seconds)
+
+        def _check() -> bool:
+            result = (
+                self._svc().files().get(fileId=file_id, fields="videoMediaMetadata").execute()
+            )
+            return bool(result.get("videoMediaMetadata"))
+
+        while datetime.now(tz=UTC) < deadline:
+            if await asyncio.to_thread(_check):
+                log.info("drive_transcoding_ready", file_id=file_id)
+                return True
+            remaining = (deadline - datetime.now(tz=UTC)).total_seconds()
+            if remaining > 0:
+                await asyncio.sleep(min(poll_interval_seconds, remaining))
+
+        log.warning(
+            "drive_transcoding_timeout", file_id=file_id, timeout_seconds=timeout_seconds
+        )
+        return False
 
     async def get_or_create_folder(self, name: str, parent_id: str) -> str:
         """Return folder ID by name under parent, creating it if it doesn't exist."""

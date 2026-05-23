@@ -127,3 +127,29 @@ async def update_message(
         url, json={"content": content}, headers=_headers(bot_token)
     ) as resp:
         resp.raise_for_status()
+
+
+async def create_thread_from_message(
+    channel_id: str, message_id: str, name: str, bot_token: str
+) -> str:
+    """
+    Create a public thread attached to message_id in channel_id.
+    Returns the thread ID (used as channel_id for subsequent messages into the thread).
+    name is truncated to 100 characters (Discord limit).
+    """
+    url = f"{_API}/channels/{channel_id}/messages/{message_id}/threads"
+    try:
+        async with aiohttp.ClientSession() as session, session.post(
+            url,
+            json={"name": name[:100], "auto_archive_duration": 1440},
+            headers=_headers(bot_token),
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return str(data["id"])
+    except aiohttp.ClientResponseError as exc:
+        raise DiscordPostError(
+            f"Discord thread creation failed (HTTP {exc.status}): {exc.message}"
+        ) from exc
+    except Exception as exc:
+        raise DiscordPostError(f"Discord thread creation failed: {exc}") from exc

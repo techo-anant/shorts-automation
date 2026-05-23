@@ -37,6 +37,7 @@ _SOURCE_STEPS = [
 _SHORT_STEPS = [
     "ffmpeg_cut",
     "drive_upload_preview",
+    "drive_preview_ready",
     "discord_post_approval",
     "approval_wait",
     "youtube_upload",

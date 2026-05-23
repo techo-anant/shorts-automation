@@ -36,6 +36,10 @@ class SourceVideo(Base):
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     local_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set when a per-source Discord thread is created at the start of the cut phase
+    discord_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # The "Processing…" placeholder message that gets edited to the success summary
+    discord_summary_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -281,6 +285,8 @@ class ApprovalRequest(Base):
         BigInteger, ForeignKey("shorts.id"), nullable=False, unique=True
     )
     discord_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Thread ID when approval messages live inside a per-source thread (null for direct-channel posts)
+    discord_thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Drive file ID of the preview MP4 in pending-approval/
     drive_preview_file_id: Mapped[str] = mapped_column(String(255), nullable=False)
     # approved | rejected | rejected_timeout | null (pending)

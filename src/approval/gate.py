@@ -1,6 +1,7 @@
 """
 Approval gate orchestration:
-  - submit_for_approval: upload cut MP4 to Drive, post Discord message, create ApprovalRequest row
+  - upload_preview_to_drive: upload cut MP4 to Drive pending-approval/
+  - post_approval_to_discord: post Discord message (optionally into a thread), create ApprovalRequest row
   - check_pending_approvals: poll Discord reactions, update Short/ApprovalRequest statuses
   - upload_approved_shorts: upload YouTube-ready approved Shorts
 """
@@ -36,34 +37,41 @@ _APPROVE_EMOJI = "👍"
 _REJECT_EMOJI = "👎"
 
 
-def _approval_message(short: Short, source_video: SourceVideo, preview_url: str) -> str:
+def _approval_message(
+    short: Short,
+    source_video: SourceVideo,
+    preview_url: str,
+    transcoding_ready: bool = True,
+) -> str:
     duration = short.cut_end_seconds - short.cut_start_seconds
     rank = short.gemini_rank or "?"
     rationale = short.gemini_rationale or "—"
     title = short.title or source_video.name
-    return (
+    msg = (
         f"🎬 **{title}**\n"
         f"Rank {rank}/10 | {duration:.0f}s "
         f"[{short.cut_start_seconds:.0f}s – {short.cut_end_seconds:.0f}s]\n"
         f"💬 _{rationale}_\n"
-        f"📎 [Preview on Drive]({preview_url})\n\n"
-        f"React {_APPROVE_EMOJI} to approve · {_REJECT_EMOJI} to reject"
+        f"📎 [Preview on Drive]({preview_url})\n"
     )
+    if not transcoding_ready:
+        msg += "⏳ _Preview may still be processing on Drive._\n"
+    msg += f"\nReact {_APPROVE_EMOJI} to approve · {_REJECT_EMOJI} to reject"
+    return msg
 
 
-async def submit_for_approval(
+async def upload_preview_to_drive(
     short: Short,
     source_video: SourceVideo,
     local_path: Path,
     drive_client: DriveClient,
-    session: AsyncSession,
     settings: Settings,
-) -> ApprovalRequest:
+) -> tuple[str, str]:
     """
-    Upload the cut MP4 to Drive pending-approval/, post a Discord message,
-    pre-add reactions, and create an ApprovalRequest row.
+    Upload the cut MP4 to Drive pending-approval/<category>/.
+    Returns (drive_file_id, preview_url).
+    Does not write to DB — the caller is responsible for committing drive_file_id.
     """
-    # Upload to Drive pending-approval/<category>/
     pending_root = await drive_client.get_or_create_folder(
         "pending-approval", settings.DRIVE_SHORTS_ROOT_FOLDER_ID
     )
@@ -71,25 +79,36 @@ async def submit_for_approval(
         source_video.category, pending_root
     )
     clip_name = f"{source_video.name}_clip_{short.id}.mp4"
-    async with record_step_timing(source_video.id, "drive_upload_preview", short_id=short.id):
-        drive_file_id = await drive_client.upload_file(local_path, clip_name, pending_folder)
-        preview_url = await drive_client.make_public(drive_file_id)
+    drive_file_id = await drive_client.upload_file(local_path, clip_name, pending_folder)
+    preview_url = await drive_client.make_public(drive_file_id)
+    return drive_file_id, preview_url
 
-    # Post Discord approval message
-    content = _approval_message(short, source_video, preview_url)
-    async with record_step_timing(source_video.id, "discord_post_approval", short_id=short.id):
-        message_id = await post_message(
-            settings.DISCORD_APPROVAL_CHANNEL_ID, settings.DISCORD_BOT_TOKEN, content
-        )
-        await add_approval_reactions(
-            settings.DISCORD_APPROVAL_CHANNEL_ID, message_id, settings.DISCORD_BOT_TOKEN
-        )
+
+async def post_approval_to_discord(
+    short: Short,
+    source_video: SourceVideo,
+    drive_file_id: str,
+    preview_url: str,
+    session: AsyncSession,
+    settings: Settings,
+    thread_id: str | None = None,
+    transcoding_ready: bool = True,
+) -> ApprovalRequest:
+    """
+    Post an approval message (into thread_id if set, otherwise the main channel),
+    pre-add reactions, and create an ApprovalRequest row.
+    """
+    content = _approval_message(short, source_video, preview_url, transcoding_ready)
+    target_channel = thread_id or settings.DISCORD_APPROVAL_CHANNEL_ID
+    message_id = await post_message(target_channel, settings.DISCORD_BOT_TOKEN, content)
+    await add_approval_reactions(target_channel, message_id, settings.DISCORD_BOT_TOKEN)
 
     expires_at = datetime.now(UTC) + timedelta(hours=settings.APPROVAL_TIMEOUT_HOURS)
     approval = ApprovalRequest(
         source_video_id=source_video.id,
         short_id=short.id,
         discord_message_id=message_id,
+        discord_thread_id=thread_id,
         drive_preview_file_id=drive_file_id,
         expires_at=expires_at,
     )
@@ -106,6 +125,7 @@ async def submit_for_approval(
         "approval_submitted",
         short_id=short.id,
         message_id=message_id,
+        thread_id=thread_id,
         expires_at=expires_at.isoformat(),
     )
     return approval
@@ -132,8 +152,10 @@ async def check_pending_approvals(settings: Settings) -> None:
             continue
 
         try:
+            # When the approval message lives in a thread, poll reactions there
+            poll_channel = approval.discord_thread_id or settings.DISCORD_APPROVAL_CHANNEL_ID
             decision = await get_decision(
-                settings.DISCORD_APPROVAL_CHANNEL_ID,
+                poll_channel,
                 approval.discord_message_id,
                 settings.DISCORD_BOT_TOKEN,
             )
@@ -178,11 +200,12 @@ async def _apply_decision(
         )
         await session.commit()
 
-    # Edit the Discord message to show the decision
+    # Edit the Discord message to show the decision — use thread if that's where it lives
     icon = "✅" if decision == "approved" else "❌"
     label = "Approved" if decision == "approved" else (
         "Rejected (timeout)" if decision == "rejected_timeout" else "Rejected"
     )
+    target_channel = approval.discord_thread_id or settings.DISCORD_APPROVAL_CHANNEL_ID
     try:
         async with get_session_factory()() as session:
             result = await session.execute(
@@ -192,7 +215,7 @@ async def _apply_decision(
         if short is not None:
             title = short.title or f"Short {short.id}"
             await update_message(
-                settings.DISCORD_APPROVAL_CHANNEL_ID,
+                target_channel,
                 approval.discord_message_id,
                 settings.DISCORD_BOT_TOKEN,
                 f"{icon} **{label}** — {title}",
