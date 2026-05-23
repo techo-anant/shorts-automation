@@ -21,6 +21,7 @@ from src.ingest.format_probe import FormatProbeResult, run_format_probe
 from src.moments.pipeline import run_clip_selection
 from src.notifications.discord import send_error, send_message
 from src.utils.ffmpeg import FFmpegError, probe_video
+from src.utils.timing import format_timing_summary, get_step_timings, record_step_timing
 
 log = structlog.get_logger(__name__)
 
@@ -80,6 +81,7 @@ def _build_success_summary(
     shorts: list[Short],
     total_cost: Decimal,
     breakdown: dict[str, Decimal],
+    timing_summary: str = "",
 ) -> str:
     facecam_str = "yes" if format_result.has_facecam else "no"
     if format_result.facecam_unstable:
@@ -110,6 +112,7 @@ def _build_success_summary(
         f"Cost: ${total_cost:.4f}  "
         f"(probe: ${probe_cost:.4f} | describe: ${describe_cost:.4f} | "
         f"select: ${select_cost:.4f})",
+        timing_summary,
     ]
     return "\n".join(line for line in lines if line)
 
@@ -175,14 +178,15 @@ async def _cut_all_shorts(
     for short in shorts:
         output_path = Path(tmpdir) / f"short_{short.id}.mp4"
         try:
-            await cut_short(
-                source_path=local_path,
-                output_path=output_path,
-                start_seconds=short.cut_start_seconds,
-                end_seconds=short.cut_end_seconds,
-                recipe=recipe,
-                info=info,
-            )
+            async with record_step_timing(source_video.id, "ffmpeg_cut", short_id=short.id):
+                await cut_short(
+                    source_path=local_path,
+                    output_path=output_path,
+                    start_seconds=short.cut_start_seconds,
+                    end_seconds=short.cut_end_seconds,
+                    recipe=recipe,
+                    info=info,
+                )
             short.format_recipe = recipe.name
             log.info("short_cut_complete", short_id=short.id, output=str(output_path))
 
@@ -233,11 +237,12 @@ async def process_source_video(
         with tempfile.TemporaryDirectory() as tmpdir:
             local_path = Path(tmpdir) / source_video.name
 
-            await drive_client.download(
-                source_video.drive_file_id,
-                local_path,
-                expected_size=source_video.size_bytes,
-            )
+            async with record_step_timing(source_video.id, "drive_download"):
+                await drive_client.download(
+                    source_video.drive_file_id,
+                    local_path,
+                    expected_size=source_video.size_bytes,
+                )
 
             async with get_session_factory()() as session:
                 await session.execute(
@@ -249,7 +254,8 @@ async def process_source_video(
 
             # --- Format probe (Gemini) ---
             try:
-                info = await probe_video(local_path)
+                async with record_step_timing(source_video.id, "ffprobe"):
+                    info = await probe_video(local_path)
             except FFmpegError as exc:
                 raise FFmpegProbeError(f"ffprobe failed for {source_video.name}: {exc}") from exc
             async with get_session_factory()() as session:
@@ -292,12 +298,13 @@ async def process_source_video(
             # --- Pegasus upload (deletes local file after upload confirmed) ---
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
-                video_index: VideoIndex = await get_or_upload_asset(
-                    session=session,
-                    source_video=source_video,
-                    video_path=local_path,
-                    settings=settings,
-                )
+                async with record_step_timing(source_video.id, "pegasus_index"):
+                    video_index: VideoIndex = await get_or_upload_asset(
+                        session=session,
+                        source_video=source_video,
+                        video_path=local_path,
+                        settings=settings,
+                    )
                 await session.commit()
 
             # local_path deleted by uploader; TemporaryDirectory cleans empty dir on exit.
@@ -356,10 +363,12 @@ async def process_source_video(
         async with get_session_factory()() as session:
             total_cost = await get_source_total_cost(session, source_video.id)
             breakdown = await get_cost_breakdown(session, source_video.id)
+            timings = await get_step_timings(session, source_video.id)
 
         if format_result is not None:
             summary = _build_success_summary(
-                source_video, format_result, shorts, total_cost, breakdown
+                source_video, format_result, shorts, total_cost, breakdown,
+                format_timing_summary(timings),
             )
             await send_message(settings.DISCORD_WEBHOOK_URL, summary)
 

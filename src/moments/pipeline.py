@@ -8,6 +8,7 @@ from src.db.models import SegmentDescription, Short, SourceVideo, VideoIndex
 from src.moments.gemini_select import select_clips
 from src.moments.pegasus_describe import describe_video
 from src.utils.ffmpeg import VideoInfo
+from src.utils.timing import record_step_timing
 
 log = structlog.get_logger(__name__)
 
@@ -42,27 +43,29 @@ async def run_clip_selection(
         log.info("gemini_prompt_fallback", category=category)
         gemini_prompt = _PROMPTS_ROOT / "gemini" / "gameplay.txt"
 
-    segments: list[SegmentDescription] = await describe_video(
-        asset_id=video_index.index_id,
-        source_video=source_video,
-        info=info,
-        session=session,
-        settings=settings,
-        prompt_path=pegasus_prompt,
-    )
+    async with record_step_timing(source_video.id, "pegasus_describe"):
+        segments: list[SegmentDescription] = await describe_video(
+            asset_id=video_index.index_id,
+            source_video=source_video,
+            info=info,
+            session=session,
+            settings=settings,
+            prompt_path=pegasus_prompt,
+        )
 
     if not segments:
         log.info("pegasus_no_segments", source_id=source_video.id)
         return []
 
-    shorts: list[Short] = await select_clips(
-        segments=segments,
-        source_video=source_video,
-        info=info,
-        session=session,
-        settings=settings,
-        prompt_path=gemini_prompt,
-    )
+    async with record_step_timing(source_video.id, "gemini_clip_selection"):
+        shorts: list[Short] = await select_clips(
+            segments=segments,
+            source_video=source_video,
+            info=info,
+            session=session,
+            settings=settings,
+            prompt_path=gemini_prompt,
+        )
 
     log.info(
         "clip_selection_done",

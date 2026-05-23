@@ -21,11 +21,12 @@ from src.approval.discord_approval import (
 )
 from src.config import Settings
 from src.costs.record import record_youtube_upload
-from src.db.models import ApprovalRequest, Short, SourceVideo
+from src.db.models import ApprovalRequest, Short, SourceVideo, StepTiming
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
 from src.errors import YouTubeQuotaError, YouTubeUploadError
 from src.notifications.discord import send_error
+from src.utils.timing import record_step_timing
 from src.youtube.quota import check_and_reserve_upload_quota
 from src.youtube.upload import upload_short
 
@@ -70,17 +71,19 @@ async def submit_for_approval(
         source_video.category, pending_root
     )
     clip_name = f"{source_video.name}_clip_{short.id}.mp4"
-    drive_file_id = await drive_client.upload_file(local_path, clip_name, pending_folder)
-    preview_url = await drive_client.make_public(drive_file_id)
+    async with record_step_timing(source_video.id, "drive_upload_preview", short_id=short.id):
+        drive_file_id = await drive_client.upload_file(local_path, clip_name, pending_folder)
+        preview_url = await drive_client.make_public(drive_file_id)
 
     # Post Discord approval message
     content = _approval_message(short, source_video, preview_url)
-    message_id = await post_message(
-        settings.DISCORD_APPROVAL_CHANNEL_ID, settings.DISCORD_BOT_TOKEN, content
-    )
-    await add_approval_reactions(
-        settings.DISCORD_APPROVAL_CHANNEL_ID, message_id, settings.DISCORD_BOT_TOKEN
-    )
+    async with record_step_timing(source_video.id, "discord_post_approval", short_id=short.id):
+        message_id = await post_message(
+            settings.DISCORD_APPROVAL_CHANNEL_ID, settings.DISCORD_BOT_TOKEN, content
+        )
+        await add_approval_reactions(
+            settings.DISCORD_APPROVAL_CHANNEL_ID, message_id, settings.DISCORD_BOT_TOKEN
+        )
 
     expires_at = datetime.now(UTC) + timedelta(hours=settings.APPROVAL_TIMEOUT_HOURS)
     approval = ApprovalRequest(
@@ -159,6 +162,19 @@ async def _apply_decision(
             update(Short)
             .where(Short.id == approval.short_id)
             .values(status=new_short_status)
+        )
+        # Record how long the operator took to respond
+        created_at = approval.created_at
+        session.add(
+            StepTiming(
+                source_video_id=approval.source_video_id,
+                short_id=approval.short_id,
+                step_name="approval_wait",
+                started_at=created_at,
+                ended_at=now,
+                duration_seconds=(now - created_at).total_seconds(),
+                succeeded=(decision != "rejected_timeout"),
+            )
         )
         await session.commit()
 
@@ -253,13 +269,14 @@ async def upload_approved_shorts(
 
             title = short.title or source_video.name
             try:
-                video_id = await upload_short(
-                    local_path=local_path,
-                    title=title,
-                    category=source_video.category,
-                    rationale=short.gemini_rationale or "",
-                    settings=settings,
-                )
+                async with record_step_timing(source_video.id, "youtube_upload", short_id=short.id):
+                    video_id = await upload_short(
+                        local_path=local_path,
+                        title=title,
+                        category=source_video.category,
+                        rationale=short.gemini_rationale or "",
+                        settings=settings,
+                    )
             except YouTubeUploadError:
                 log.exception("youtube_upload_failed", short_id=short.id)
                 async with get_session_factory()() as session:

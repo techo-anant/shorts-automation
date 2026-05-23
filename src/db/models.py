@@ -61,6 +61,7 @@ class SourceVideo(Base):
         back_populates="source_video", uselist=False
     )
     cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="source_video")
+    step_timings: Mapped[list["StepTiming"]] = relationship(back_populates="source_video")
 
 
 class FormatProfile(Base):
@@ -264,6 +265,7 @@ class Short(Base):
     clip_selection: Mapped[Optional["ClipSelection"]] = relationship(back_populates="short")
     approval_request: Mapped[Optional["ApprovalRequest"]] = relationship(back_populates="short")
     cost_events: Mapped[list["CostEvent"]] = relationship(back_populates="short")
+    step_timings: Mapped[list["StepTiming"]] = relationship(back_populates="short")
 
 
 class ApprovalRequest(Base):
@@ -358,6 +360,32 @@ class CostEvent(Base):
     detection_run: Mapped[Optional["MomentDetectionRun"]] = relationship(
         back_populates="cost_events"
     )
+
+
+class StepTiming(Base):
+    """One row per pipeline step per run. Timing is best-effort — write failures are non-fatal."""
+
+    __tablename__ = "step_timings"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_video_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("source_videos.id"), nullable=False
+    )
+    # Null for source-level steps; set for per-short steps (ffmpeg_cut, drive_upload_preview, etc.)
+    short_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("shorts.id"), nullable=True
+    )
+    step_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    source_video: Mapped["SourceVideo"] = relationship(back_populates="step_timings")
+    short: Mapped[Optional["Short"]] = relationship(back_populates="step_timings")
 
 
 class QuotaUsage(Base):

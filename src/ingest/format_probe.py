@@ -14,6 +14,7 @@ from src.db.models import FormatProfile, SourceVideo
 from src.errors import GeminiProbeError, GeminiQuotaError
 from src.ingest.frames import extract_sample_frames
 from src.utils.ffmpeg import VideoInfo
+from src.utils.timing import record_step_timing
 
 log = structlog.get_logger(__name__)
 
@@ -112,10 +113,12 @@ async def run_format_probe(
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     with tempfile.TemporaryDirectory() as frame_dir:
-        frame_paths = await extract_sample_frames(video_path, Path(frame_dir), info)
-        frame_results, total_input_tokens, total_output_tokens = await _analyse_frames(
-            client, frame_paths
-        )
+        async with record_step_timing(source_video.id, "frame_extraction"):
+            frame_paths = await extract_sample_frames(video_path, Path(frame_dir), info)
+        async with record_step_timing(source_video.id, "gemini_format_probe"):
+            frame_results, total_input_tokens, total_output_tokens = await _analyse_frames(
+                client, frame_paths
+            )
 
     result = _aggregate_frame_results(frame_results, info)
 
