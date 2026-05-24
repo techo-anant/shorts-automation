@@ -86,6 +86,17 @@ class GeminiQuotaError(GeminiError):
 
 
 # ---------------------------------------------------------------------------
+# Ingest-time validation
+# ---------------------------------------------------------------------------
+
+
+class SourceTooLongError(PipelineError):
+    """Source video duration exceeds the Pegasus limit — operator must trim before processing."""
+    provider = "ingest"
+    step = "ingest.oversized"
+
+
+# ---------------------------------------------------------------------------
 # FFmpeg
 # ---------------------------------------------------------------------------
 

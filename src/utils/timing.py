@@ -26,6 +26,7 @@ log = structlog.get_logger(__name__)
 _SOURCE_STEPS = [
     "drive_download",
     "ffprobe",
+    "oversized_preprocess",
     "frame_extraction",
     "gemini_format_probe",
     "pegasus_index",

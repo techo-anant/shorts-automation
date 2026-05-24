@@ -13,8 +13,9 @@ from src.costs.record import get_cost_breakdown, get_source_total_cost
 from src.db.models import CropRequest, FormatProfile, Short, SourceVideo, VideoIndex
 from src.db.session import get_session_factory
 from src.drive.client import DriveClient
-from src.errors import FFmpegProbeError, PipelineError
+from src.errors import FFmpegCutError, FFmpegProbeError, PipelineError
 from src.ffmpeg.cut import cut_short
+from src.ffmpeg.preprocess import preprocess_if_oversized
 from src.ffmpeg.recipes import select_recipe
 from src.indexer.pegasus import get_or_upload_asset
 from src.ingest.crop_request import request_manual_crop
@@ -309,6 +310,22 @@ async def process_source_video(
                     info = await probe_video(local_path)
             except FFmpegError as exc:
                 raise FFmpegProbeError(f"ffprobe failed for {source_video.name}: {exc}") from exc
+            # --- Pre-process if source exceeds Pegasus size/duration limits ---
+            _src_size = local_path.stat().st_size
+            if (
+                _src_size > settings.MAX_SOURCE_SIZE_BYTES
+                or info.duration_seconds > settings.MAX_SOURCE_DURATION_SECONDS
+            ):
+                try:
+                    async with record_step_timing(source_video.id, "oversized_preprocess"):
+                        local_path = await preprocess_if_oversized(
+                            local_path, info, settings, Path(tmpdir)
+                        )
+                except FFmpegError as exc:
+                    raise FFmpegCutError(
+                        f"Oversized re-encode failed for {source_video.name}: {exc}"
+                    ) from exc
+
             async with get_session_factory()() as session:
                 await check_cost_budget(session, source_video.id, settings)
                 format_result = await run_format_probe(

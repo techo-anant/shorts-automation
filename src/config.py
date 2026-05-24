@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     # Fraction of 1920px height allocated to the facecam strip in the split recipe.
     FACECAM_TOP_PCT: float = 0.30
 
+    # Pegasus upload limits — slightly under the hard caps to leave margin
+    # Pegasus hard caps: 2 GiB file size, 2 h duration
+    MAX_SOURCE_SIZE_BYTES: int = 2_040_109_466  # 1.9 GiB
+    MAX_SOURCE_DURATION_SECONDS: int = 6900  # 1 h 55 m
+
     # Cost circuit breakers (USD)
     COST_WARN_USD: Decimal = Decimal("5.00")
     COST_HARD_STOP_USD: Decimal = Decimal("8.00")
